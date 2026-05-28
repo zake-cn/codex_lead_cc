@@ -15,7 +15,8 @@
     "demo": "node dist/index.js cc_run_task --project-path examples/demo-project --task \"Read this project and explain its structure and entry file.\" --timeout-sec 300",
     "demo:test": "python3 -m unittest discover -s examples/demo-project/tests",
     "demo:worker": "node dist/index.js cc_create_worker --project-path examples/demo-project --role scout",
-    "benchmark": "tsx benchmarks/run_benchmark.ts"
+    "benchmark": "tsx benchmarks/run_benchmark.ts",
+    "smoke:wait-mode": "tsx tests/smoke_wait_mode.ts"
   },
   "keywords": [
     "codex",

@@ -11,6 +11,9 @@ import { PlanManager } from "./plan_manager.js";
 import { DagScheduler } from "./dag_scheduler.js";
 import { SessionManager } from "./session_manager.js";
 import { MetricsCollector } from "./metrics_collector.js";
+import { SupervisorStateManager } from "./supervisor_state.js";
+import { SupervisorInbox } from "./supervisor_inbox.js";
+import { WaitController } from "./wait_controller.js";
 
 export interface OrchestratorRuntime {
   store: StateStore;
@@ -25,6 +28,9 @@ export interface OrchestratorRuntime {
   plans: PlanManager;
   sessions: SessionManager;
   metrics: MetricsCollector;
+  supervisorState: SupervisorStateManager;
+  inbox: SupervisorInbox;
+  wait: WaitController;
 }
 
 export function createRuntime(stateDir?: string): OrchestratorRuntime {
@@ -46,5 +52,8 @@ export function createRuntime(stateDir?: string): OrchestratorRuntime {
     plans: new PlanManager(store),
     sessions: new SessionManager(store),
     metrics: new MetricsCollector(store),
+    supervisorState: new SupervisorStateManager(store),
+    inbox: new SupervisorInbox(store),
+    wait: new WaitController(store),
   };
 }

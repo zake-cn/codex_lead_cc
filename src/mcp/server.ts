@@ -16,21 +16,48 @@ import { ccGetPendingPermissions } from "../tools/cc_get_pending_permissions.js"
 import { ccGetPlan } from "../tools/cc_get_plan.js";
 import { ccGetReport } from "../tools/cc_get_report.js";
 import { ccGetStatus } from "../tools/cc_get_status.js";
+import { ccGetSupervisorState } from "../tools/cc_get_supervisor_state.js";
+import { ccGetInbox } from "../tools/cc_get_inbox.js";
 import { ccGetUpdates } from "../tools/cc_get_updates.js";
 import { ccGetWorkerHealth } from "../tools/cc_get_worker_health.js";
 import { ccListPlans } from "../tools/cc_list_plans.js";
 import { ccListTasks } from "../tools/cc_list_tasks.js";
 import { ccListWorkers } from "../tools/cc_list_workers.js";
+import { ccMarkNotificationsRead } from "../tools/cc_mark_notifications_read.js";
 import { ccRejectPermission } from "../tools/cc_reject_permission.js";
 import { ccRestartWorker } from "../tools/cc_restart_worker.js";
+import { ccSetSupervisorState } from "../tools/cc_set_supervisor_state.js";
 import { ccStopTask } from "../tools/cc_stop_task.js";
 import { ccStopWorker } from "../tools/cc_stop_worker.js";
 import { ccUpdatePlan } from "../tools/cc_update_plan.js";
-import { TASK_STATUSES, WORKER_ROLES, WORKER_RUNTIMES, WORKER_STATUSES } from "../types.js";
+import { ccWaitForEvents } from "../tools/cc_wait_for_events.js";
+import {
+  REPORT_LEVELS,
+  SUPERVISOR_STATES,
+  TASK_STATUSES,
+  WAKE_PRIORITIES,
+  WORKER_ROLES,
+  WORKER_RUNTIMES,
+  WORKER_STATUSES,
+} from "../types.js";
 import { mcpJsonResult } from "./tool_result.js";
 
 const PLAN_STATUSES = ["active", "completed", "archived"] as const;
 const PLAN_TASK_STATUSES = ["planned", ...TASK_STATUSES] as const;
+const WAKE_TYPES = [
+  "permission_requested",
+  "task_completed",
+  "task_failed",
+  "task_timeout",
+  "worker_stalled",
+  "worker_crashed",
+  "review_completed",
+  "patch_generated",
+  "test_completed",
+  "task_skipped",
+  "dag_unblocked",
+  "plan_completed",
+] as const;
 
 export async function startMcpServer(): Promise<void> {
   const server = new McpServer({
@@ -94,10 +121,85 @@ export async function startMcpServer(): Promise<void> {
       title: "Get Report",
       description: "Get a structured task report. Running tasks return a partial report.",
       inputSchema: {
-        task_id: z.string().min(1),
+        task_id: z.string().min(1).optional(),
+        report_id: z.string().min(1).optional(),
+        level: z.enum(REPORT_LEVELS).optional(),
       },
     },
     async (input) => mcpJsonResult(await ccGetReport(input)),
+  );
+
+  server.registerTool(
+    "cc_set_supervisor_state",
+    {
+      title: "Set Supervisor State",
+      description: "Set the Codex supervisor state for a project or plan.",
+      inputSchema: {
+        project_id: z.string().min(1),
+        plan_id: z.string().min(1).optional(),
+        state: z.enum(SUPERVISOR_STATES),
+        reason: z.string().optional(),
+      },
+    },
+    async (input) => mcpJsonResult(await ccSetSupervisorState(input)),
+  );
+
+  server.registerTool(
+    "cc_get_supervisor_state",
+    {
+      title: "Get Supervisor State",
+      description: "Read the current supervisor state for a project or plan.",
+      inputSchema: {
+        project_id: z.string().min(1),
+        plan_id: z.string().min(1).optional(),
+      },
+    },
+    async (input) => mcpJsonResult(await ccGetSupervisorState(input)),
+  );
+
+  server.registerTool(
+    "cc_wait_for_events",
+    {
+      title: "Wait For Events",
+      description: "Long-poll for wake-worthy supervisor notifications and return a lightweight wake packet.",
+      inputSchema: {
+        project_id: z.string().min(1).optional(),
+        plan_id: z.string().min(1).optional(),
+        since_event_id: z.number().int().nonnegative().optional(),
+        wake_on: z.array(z.enum(WAKE_TYPES)).optional(),
+        timeout_sec: z.number().int().positive().optional(),
+        max_events: z.number().int().positive().optional(),
+      },
+    },
+    async (input) => mcpJsonResult(await ccWaitForEvents(input)),
+  );
+
+  server.registerTool(
+    "cc_get_inbox",
+    {
+      title: "Get Supervisor Inbox",
+      description: "List supervisor notifications without loading full reports or raw logs.",
+      inputSchema: {
+        project_id: z.string().min(1).optional(),
+        plan_id: z.string().min(1).optional(),
+        only_unread: z.boolean().optional(),
+        min_priority: z.enum(WAKE_PRIORITIES).optional(),
+        max_notifications: z.number().int().positive().optional(),
+      },
+    },
+    async (input) => mcpJsonResult(await ccGetInbox(input)),
+  );
+
+  server.registerTool(
+    "cc_mark_notifications_read",
+    {
+      title: "Mark Notifications Read",
+      description: "Mark supervisor inbox notifications as read.",
+      inputSchema: {
+        notification_ids: z.array(z.string().min(1)).min(1),
+      },
+    },
+    async (input) => mcpJsonResult(await ccMarkNotificationsRead(input)),
   );
 
   server.registerTool(

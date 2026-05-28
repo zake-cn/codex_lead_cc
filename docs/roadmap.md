@@ -45,7 +45,20 @@ Completed in this milestone.
 - Local status dashboard with `status --watch`
 - Expanded README and architecture docs
 
-## Phase 4 Candidates
+## Phase 4: Supervisor Wait Mode
+
+Completed in this milestone.
+
+- Supervisor state tracking
+- Supervisor inbox notifications
+- Central wake policy
+- `cc_wait_for_events` long polling
+- Lightweight wake packets with lazy report loading
+- `cc_get_report` summary/full/raw levels
+- Status dashboard display for supervisor state and unread inbox
+- Wait-mode smoke test
+
+## Later Candidates
 
 - Real Claude Code SDK runtime implementation
 - Deeper command-level permission interception

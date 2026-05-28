@@ -11,6 +11,10 @@ Workers are local orchestration records with session metadata. Phase 3 does not 
 - `stopped`: worker was stopped by the supervisor.
 - `crashed`: reserved state for failed adapter/session health.
 
+Tasks use `pending`, `blocked`, `ready`, `running`, `waiting_permission`, `completed`, `failed`, `timeout`, `stopped`, and `skipped`.
+
+The supervisor can be `active`, `planning`, `dispatching`, `waiting`, `sleeping`, `reviewing`, `blocked`, or `completed`. When Codex has dispatched all ready work and has no immediate decision to make, it should set the supervisor state to `sleeping` or `waiting` and call `cc_wait_for_events`.
+
 ## Roles
 
 - `scout`: read-only project analysis.
@@ -28,6 +32,16 @@ Each worker has:
 - `idle_timeout_sec`
 
 The CLI runtime still uses per-task Claude Code processes. The session abstraction is intentionally metadata-first so the SDK adapter can later attach stronger context reuse.
+
+## Wake Layer
+
+Worker and task lifecycle events still go into the event log first. Phase 4 adds a wake layer above that log:
+
+```text
+event_log fact -> wake_policy -> supervisor_inbox notification -> cc_wait_for_events wake packet
+```
+
+The wake packet is intentionally lightweight. It is a decision notice, not a full report or raw log.
 
 ## Health Tools
 

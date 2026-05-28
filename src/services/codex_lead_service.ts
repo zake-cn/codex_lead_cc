@@ -18,18 +18,23 @@ import type {
   GetPendingPermissionsInput,
   GetPlanInput,
   GetReportInput,
+  GetInboxInput,
   GetStatusInput,
+  GetSupervisorStateInput,
   GetUpdatesInput,
   GetWorkerHealthInput,
   ListPlansInput,
   ListTasksInput,
   ListWorkersInput,
+  MarkNotificationsReadInput,
   MetricsInput,
   RejectPermissionInput,
   RestartWorkerInput,
+  SetSupervisorStateInput,
   StopTaskInput,
   StopWorkerInput,
   UpdatePlanInput,
+  WaitForEventsInput,
 } from "../types.js";
 import { createRuntime, type OrchestratorRuntime } from "../orchestrator/runtime.js";
 
@@ -69,6 +74,26 @@ export class CodexLeadService {
 
   async getReport(input: GetReportInput) {
     return this.runtime.tasks.getReport(input);
+  }
+
+  async setSupervisorState(input: SetSupervisorStateInput) {
+    return this.runtime.supervisorState.setState(input);
+  }
+
+  async getSupervisorState(input: GetSupervisorStateInput) {
+    return this.runtime.supervisorState.getState(input);
+  }
+
+  async waitForEvents(input: WaitForEventsInput) {
+    return this.runtime.wait.waitForEvents(input);
+  }
+
+  async getInbox(input: GetInboxInput) {
+    return this.runtime.inbox.getInbox(input);
+  }
+
+  async markNotificationsRead(input: MarkNotificationsReadInput) {
+    return this.runtime.inbox.markRead(input);
   }
 
   async stopTask(input: StopTaskInput) {

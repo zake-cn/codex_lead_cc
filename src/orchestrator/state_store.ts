@@ -3,6 +3,7 @@ import path from "node:path";
 
 import type { AgentForemanState } from "../types.js";
 import { reportTypeForRole } from "../report/report_schema.js";
+import { buildNotificationFromEvent } from "./wake_policy.js";
 
 const DEFAULT_STATE_DIR = ".agentforeman";
 
@@ -182,11 +183,12 @@ export class StateStore {
 
 export function defaultState(): AgentForemanState {
   return {
-    version: 3,
+    version: 4,
     counters: {
       worker: 0,
       task: 0,
       event: 0,
+      notification: 0,
       permission: 0,
       rule: 0,
       artifact: 0,
@@ -197,6 +199,8 @@ export function defaultState(): AgentForemanState {
     workers: {},
     tasks: {},
     events: [],
+    supervisor_states: {},
+    notifications: {},
     permission_requests: {},
     permission_rules: {},
     artifacts: {},
@@ -211,7 +215,7 @@ export function nowIso(): string {
 }
 
 export function nextId(
-  prefix: "ccw" | "task" | "perm" | "rule" | "art" | "plan" | "change" | "session",
+  prefix: "ccw" | "task" | "perm" | "rule" | "art" | "plan" | "change" | "session" | "note",
   counter: number,
 ): string {
   return `${prefix}_${counter.toString().padStart(3, "0")}`;
@@ -228,6 +232,17 @@ export function appendEvent(
     ...event,
   };
   state.events.push(record);
+  const notification = buildNotificationFromEvent(state, record);
+  if (notification) {
+    state.counters.notification += 1;
+    const notificationId = nextId("note", state.counters.notification);
+    state.notifications[notificationId] = {
+      notification_id: notificationId,
+      read: false,
+      created_at: record.time,
+      ...notification,
+    };
+  }
   return record;
 }
 
@@ -236,7 +251,7 @@ function normalizeState(raw: AgentForemanState): AgentForemanState {
   const normalized: AgentForemanState = {
     ...base,
     ...raw,
-    version: 3,
+    version: 4,
     counters: {
       ...base.counters,
       ...(raw.counters ?? {}),
@@ -244,6 +259,8 @@ function normalizeState(raw: AgentForemanState): AgentForemanState {
     workers: raw.workers ?? {},
     tasks: raw.tasks ?? {},
     events: raw.events ?? [],
+    supervisor_states: raw.supervisor_states ?? {},
+    notifications: raw.notifications ?? {},
     permission_requests: raw.permission_requests ?? {},
     permission_rules: raw.permission_rules ?? {},
     artifacts: raw.artifacts ?? {},

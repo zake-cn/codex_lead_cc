@@ -134,7 +134,7 @@ async function readStdin(): Promise<string> {
 }
 
 function printHelp(): void {
-  process.stdout.write(`codex_lead_cc Phase 3 local CLI
+  process.stdout.write(`codex_lead_cc Phase 4 local CLI
 
 Usage:
   codex-lead-cc mcp
@@ -147,6 +147,10 @@ Usage:
   codex-lead-cc cc_get_status --task-id <task_001>
   codex-lead-cc cc_get_status --worker-id <ccw_001>
   codex-lead-cc cc_get_report --task-id <task_001>
+  codex-lead-cc cc_get_report --task-id <task_001> --level <summary|full|raw>
+  codex-lead-cc cc_set_supervisor_state --project-id <project> --state <active|waiting|sleeping>
+  codex-lead-cc cc_wait_for_events --project-id <project> [--timeout-sec 30]
+  codex-lead-cc cc_get_inbox [--project-id <project>] [--only-unread true]
   codex-lead-cc cc_stop_task --task-id <task_001> [--reason <reason>]
   codex-lead-cc cc_get_updates --since-event-id <1000>
   codex-lead-cc cc_get_pending_permissions [--project-id <project>]
@@ -167,6 +171,14 @@ Commands:
   cc_assign_task     Assign a task and return immediately with task_id
   cc_get_status      Read task or worker status
   cc_get_report      Read a structured task report
+  cc_set_supervisor_state
+                     Set the Codex supervisor state for a project or plan
+  cc_get_supervisor_state
+                     Read the current supervisor state
+  cc_wait_for_events Wait for wake-worthy events and return a lightweight wake packet
+  cc_get_inbox       Read supervisor notifications
+  cc_mark_notifications_read
+                     Mark supervisor notifications as read
   cc_stop_task       Stop a running task
   cc_stop_worker     Stop a worker and its current task
   cc_delete_worker   Delete an idle/stopped worker
@@ -198,9 +210,16 @@ Commands:
 `);
 }
 
-const numericFields = new Set(["timeout_sec", "since_event_id", "version", "idle_timeout_sec"]);
-const booleanFields = new Set(["all", "dry_run"]);
-const arrayFields = new Set(["depends_on"]);
+const numericFields = new Set([
+  "timeout_sec",
+  "since_event_id",
+  "version",
+  "idle_timeout_sec",
+  "max_events",
+  "max_notifications",
+]);
+const booleanFields = new Set(["all", "dry_run", "only_unread"]);
+const arrayFields = new Set(["depends_on", "wake_on", "notification_ids"]);
 
 main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);

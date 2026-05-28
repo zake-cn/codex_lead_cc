@@ -39,6 +39,16 @@ The MCP surface is intentionally managerial. It does not expose direct file read
 - `cc_get_worker_health`
 - `cc_cleanup_idle_workers`
 
+## Phase 4 Wait-Mode Tools
+
+- `cc_set_supervisor_state`
+- `cc_get_supervisor_state`
+- `cc_wait_for_events`
+- `cc_get_inbox`
+- `cc_mark_notifications_read`
+
+`cc_wait_for_events` returns a lightweight wake packet. It does not return full reports, raw logs, source files, or full diffs. After a wake packet, Codex should call `cc_get_report` with `level: "summary"` first, then escalate to `full` or `raw` only when needed.
+
 ## Design Rule
 
 Every tool returns management state or structured artifacts. Codex reviews reports and diffs, but Claude Code remains responsible for tactical project interaction.

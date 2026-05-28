@@ -31,6 +31,10 @@ Claude Code performs tactical work inside a project directory or managed worktre
 - `orchestrator/scheduler.ts`: queue and `max_concurrent_workers`.
 - `orchestrator/permission_engine.ts`: allow/ask/deny rules and approval state.
 - `orchestrator/event_log.ts`: event polling.
+- `orchestrator/supervisor_state.ts`: supervisor state such as active, waiting, or sleeping.
+- `orchestrator/supervisor_inbox.ts`: lightweight notifications derived from event log facts.
+- `orchestrator/wake_policy.ts`: centralized event-to-notification mapping and wake priority.
+- `orchestrator/wait_controller.ts`: long-poll wait channel for `cc_wait_for_events`.
 - `orchestrator/worktree_manager.ts`: git worktree isolation.
 - `orchestrator/diff_manager.ts`: patch and diff artifacts.
 - `orchestrator/metrics_collector.ts`: runtime/report/log metrics.
@@ -58,7 +62,8 @@ sequenceDiagram
   C->>P: approve / reject
   O->>W: launch worker task
   W->>A: logs, report, patch
-  O-->>C: events, report, diff, metrics
+  O->>O: event log -> wake policy -> supervisor inbox
+  O-->>C: wake packet, events, report, diff, metrics
 ```
 
 ## State
@@ -69,6 +74,6 @@ Phase 3 still keeps JSON state for portability:
 .agentforeman/state.json
 ```
 
-The state includes workers, sessions, tasks, plans, plan changes, events, permission requests, permission rules, and artifacts.
+The state includes workers, sessions, tasks, plans, plan changes, events, supervisor states, notifications, permission requests, permission rules, and artifacts.
 
 SQLite remains a possible later upgrade.

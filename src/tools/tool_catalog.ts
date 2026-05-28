@@ -12,17 +12,22 @@ import { ccGetPendingPermissions } from "./cc_get_pending_permissions.js";
 import { ccGetPlan } from "./cc_get_plan.js";
 import { ccGetReport } from "./cc_get_report.js";
 import { ccGetStatus } from "./cc_get_status.js";
+import { ccGetSupervisorState } from "./cc_get_supervisor_state.js";
+import { ccGetInbox } from "./cc_get_inbox.js";
 import { ccGetUpdates } from "./cc_get_updates.js";
 import { ccGetWorkerHealth } from "./cc_get_worker_health.js";
 import { ccListPlans } from "./cc_list_plans.js";
 import { ccListTasks } from "./cc_list_tasks.js";
 import { ccListWorkers } from "./cc_list_workers.js";
+import { ccMarkNotificationsRead } from "./cc_mark_notifications_read.js";
 import { ccRejectPermission } from "./cc_reject_permission.js";
 import { ccRestartWorker } from "./cc_restart_worker.js";
 import { ccRunTask } from "./cc_run_task.js";
+import { ccSetSupervisorState } from "./cc_set_supervisor_state.js";
 import { ccStopTask } from "./cc_stop_task.js";
 import { ccStopWorker } from "./cc_stop_worker.js";
 import { ccUpdatePlan } from "./cc_update_plan.js";
+import { ccWaitForEvents } from "./cc_wait_for_events.js";
 
 export interface ToolCatalogEntry {
   flags: Record<string, string>;
@@ -70,8 +75,55 @@ export const TOOL_CATALOG: Record<string, ToolCatalogEntry> = {
     handler: (input) => ccGetStatus(input as never),
   },
   cc_get_report: {
-    flags: { "--task-id": "task_id" },
+    flags: {
+      "--task-id": "task_id",
+      "--report-id": "report_id",
+      "--level": "level",
+    },
     handler: (input) => ccGetReport(input as never),
+  },
+  cc_set_supervisor_state: {
+    flags: {
+      "--project-id": "project_id",
+      "--plan-id": "plan_id",
+      "--state": "state",
+      "--reason": "reason",
+    },
+    handler: (input) => ccSetSupervisorState(input as never),
+  },
+  cc_get_supervisor_state: {
+    flags: {
+      "--project-id": "project_id",
+      "--plan-id": "plan_id",
+    },
+    handler: (input) => ccGetSupervisorState(input as never),
+  },
+  cc_wait_for_events: {
+    flags: {
+      "--project-id": "project_id",
+      "--plan-id": "plan_id",
+      "--since-event-id": "since_event_id",
+      "--wake-on": "wake_on",
+      "--timeout-sec": "timeout_sec",
+      "--max-events": "max_events",
+    },
+    handler: (input) => ccWaitForEvents(input as never),
+  },
+  cc_get_inbox: {
+    flags: {
+      "--project-id": "project_id",
+      "--plan-id": "plan_id",
+      "--only-unread": "only_unread",
+      "--min-priority": "min_priority",
+      "--max-notifications": "max_notifications",
+    },
+    handler: (input) => ccGetInbox(input as never),
+  },
+  cc_mark_notifications_read: {
+    flags: {
+      "--notification-ids": "notification_ids",
+    },
+    handler: (input) => ccMarkNotificationsRead(input as never),
   },
   cc_stop_task: {
     flags: {

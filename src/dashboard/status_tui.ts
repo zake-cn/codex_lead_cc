@@ -21,10 +21,40 @@ export async function renderStatusDashboard(projectId?: string): Promise<string>
     .filter((event) => !projectId || event.project_id === projectId)
     .slice(-8)
     .reverse();
+  const supervisorState = activePlan
+    ? state.supervisor_states[`${activePlan.project_id}::${activePlan.plan_id}`] ??
+      state.supervisor_states[`${activePlan.project_id}::*`]
+    : projectId
+      ? state.supervisor_states[`${projectId}::*`]
+      : undefined;
+  const inbox = Object.values(state.notifications)
+    .filter((notification) => !projectId || notification.project_id === projectId)
+    .filter((notification) => !notification.read)
+    .sort((a, b) => b.event_id - a.event_id)
+    .slice(0, 8);
+  const wakeEvents = inbox
+    .filter((notification) => notification.requires_action)
+    .slice(0, 5);
 
   const lines = [
     `Project: ${projectId ?? activePlan?.project_id ?? "all"}`,
     `Plan: ${activePlan ? `${activePlan.plan_id} v${activePlan.version} - ${activePlan.goal}` : "none"}`,
+    `Supervisor: ${supervisorState ? `${supervisorState.state}${supervisorState.reason ? ` - ${supervisorState.reason}` : ""}` : "active"}`,
+    "",
+    "Inbox:",
+    ...renderRows(inbox.map((notification) => [
+      `[${notification.priority}]`,
+      notification.type,
+      notification.task_id ?? "-",
+      notification.summary,
+    ]), "  none"),
+    "",
+    "Recent Wake Events:",
+    ...renderRows(wakeEvents.map((notification) => [
+      String(notification.event_id),
+      notification.type,
+      notification.summary,
+    ]), "  none"),
     "",
     "Workers:",
     ...renderRows(workers.map((worker) => [

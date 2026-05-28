@@ -49,6 +49,14 @@ Phase 3 upgrades the project into a GitHub-showcase local runtime:
 - Reproducible benchmark assets.
 - Local status dashboard via `codex-lead-cc status --watch`.
 
+Phase 4 adds Supervisor Wait Mode:
+
+- Supervisor state tracking for `active`, `waiting`, `sleeping`, `reviewing`, and related states.
+- Supervisor inbox notifications generated from event log facts.
+- Central wake policy for permission requests, task completion, failures, patch generation, test completion, and review completion.
+- `cc_wait_for_events` long-polling so Codex can sleep until a wake-worthy worker event appears.
+- Summary/full/raw report levels, keeping wake packets lightweight by default.
+
 ## Install
 
 ```bash
@@ -128,7 +136,23 @@ node dist/index.js cc_get_updates --since-event-id 0 --project-id demo-project
 Get a report:
 
 ```bash
-node dist/index.js cc_get_report --task-id task_001
+node dist/index.js cc_get_report --task-id task_001 --level summary
+```
+
+Sleep until a worker produces a wake-worthy event:
+
+```bash
+node dist/index.js cc_set_supervisor_state \
+  --project-id demo-project \
+  --plan-id plan_001 \
+  --state sleeping \
+  --reason "All ready tasks are dispatched."
+
+node dist/index.js cc_wait_for_events \
+  --project-id demo-project \
+  --plan-id plan_001 \
+  --wake-on task_completed,task_failed,permission_requested,patch_generated,review_completed \
+  --timeout-sec 30
 ```
 
 ## MCP Tools
@@ -166,6 +190,14 @@ Phase 3 tools:
 - `cc_restart_worker`
 - `cc_get_worker_health`
 - `cc_cleanup_idle_workers`
+
+Phase 4 wait-mode tools:
+
+- `cc_set_supervisor_state`
+- `cc_get_supervisor_state`
+- `cc_wait_for_events`
+- `cc_get_inbox`
+- `cc_mark_notifications_read`
 
 The tool surface is intentionally managerial. It does not expose `read_file`, `run_shell`, or `edit_file` to Codex.
 
@@ -227,6 +259,12 @@ Run the benchmark dry-run:
 
 ```bash
 npm run benchmark
+```
+
+Run the wait-mode smoke test:
+
+```bash
+npm run smoke:wait-mode
 ```
 
 The benchmark directory contains reproducible task definitions and a sample result for the scout -> implementer -> tester -> reviewer flow.

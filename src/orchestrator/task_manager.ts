@@ -126,6 +126,8 @@ export class TaskManager {
         tasks: Object.values(state.tasks),
         plans: Object.values(state.plans),
         pending_permissions: Object.values(state.permission_requests).filter((request) => request.status === "pending"),
+        supervisor_states: Object.values(state.supervisor_states),
+        unread_notifications: Object.values(state.notifications).filter((notification) => !notification.read),
         recent_events: state.events.slice(-20),
       };
     }
@@ -199,26 +201,47 @@ export class TaskManager {
 
   async getReport(input: GetReportInput): Promise<TaskReport> {
     const state = await this.store.readState();
-    const task = state.tasks[input.task_id];
+    const taskId = resolveReportTaskId(input, state);
+    const task = state.tasks[taskId];
     if (!task) {
-      throw new Error(`Task not found: ${input.task_id}`);
+      throw new Error(`Task not found: ${taskId}`);
     }
 
+    const level = input.level ?? "full";
+    let fullReport: TaskReport | undefined;
     if (FINAL_TASK_STATUS_SET.has(task.status)) {
       const savedReport = await readJsonReport(task.report_path).catch(() => undefined);
       if (savedReport) {
-        return savedReport;
+        fullReport = savedReport;
       }
     }
 
-    const { stdout, stderr } = await this.readTaskOutput(task.id);
-    return buildTaskReport({
-      task,
-      stdout,
-      stderr,
-      status: task.status,
-      summary: task.summary ?? summarizeTaskReport(task.status, stdout, stderr),
-    });
+    if (!fullReport) {
+      const { stdout, stderr } = await this.readTaskOutput(task.id);
+      fullReport = buildTaskReport({
+        task,
+        stdout,
+        stderr,
+        status: task.status,
+        summary: task.summary ?? summarizeTaskReport(task.status, stdout, stderr),
+      });
+    }
+
+    if (level === "summary") {
+      return summarizeReportForSupervisor(fullReport) as unknown as TaskReport;
+    }
+
+    if (level === "raw") {
+      const paths = this.store.taskPaths(task.id);
+      const rawLog = await readFile(paths.logPath, "utf8").catch(() => "");
+      return {
+        ...fullReport,
+        raw_log: rawLog,
+        raw_log_bytes: Buffer.byteLength(rawLog),
+      } as TaskReport;
+    }
+
+    return fullReport;
   }
 
   async stopTask(input: StopTaskInput): Promise<{
@@ -418,6 +441,63 @@ function normalizeTask(task: string): string {
     throw new Error("task is required and must be a non-empty string.");
   }
   return task;
+}
+
+function resolveReportTaskId(input: GetReportInput, state: AgentForemanState): string {
+  if (input.task_id) {
+    return input.task_id;
+  }
+  if (!input.report_id) {
+    throw new Error("cc_get_report requires task_id or report_id.");
+  }
+
+  const reportTaskMatch = /^report_(task_\d+)$/.exec(input.report_id);
+  if (reportTaskMatch) {
+    return reportTaskMatch[1];
+  }
+  if (state.tasks[input.report_id]) {
+    return input.report_id;
+  }
+
+  const artifact = state.artifacts[input.report_id];
+  if (artifact?.type === "report") {
+    return artifact.task_id;
+  }
+
+  throw new Error(`Report not found: ${input.report_id}`);
+}
+
+function summarizeReportForSupervisor(report: TaskReport): Record<string, unknown> {
+  return {
+    report_type: report.report_type,
+    task_id: report.task_id,
+    worker_id: report.worker_id,
+    role: report.role,
+    status: report.status,
+    summary: report.summary,
+    exit_code: report.exit_code,
+    started_at: report.started_at,
+    finished_at: report.finished_at,
+    duration_ms: report.duration_ms,
+    log_path: report.log_path,
+    report_path: report.report_path,
+    worktree_path: report.worktree_path,
+    patch_path: report.patch_path,
+    files_modified: report.files_modified,
+    commands_run: report.commands_run,
+    test_result: report.test_result,
+    failures: report.failures,
+    review_target: report.review_target,
+    decision: report.decision,
+    findings: report.findings,
+    stdout_bytes: Buffer.byteLength(report.stdout ?? ""),
+    stderr_bytes: Buffer.byteLength(report.stderr ?? ""),
+    detail_policy: {
+      current_level: "summary",
+      next_levels: ["full", "raw"],
+      note: "Summary omits stdout/stderr. Request level=full for report text or level=raw for logs when triaging.",
+    },
+  };
 }
 
 function normalizeTimeout(timeoutSec = DEFAULT_TIMEOUT_SEC): number {

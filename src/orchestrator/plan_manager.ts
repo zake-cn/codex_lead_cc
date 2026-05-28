@@ -178,6 +178,7 @@ export class PlanManager {
           from_version: fromVersion,
           to_version: plan.version,
           reason,
+          status: plan.status,
           added_tasks: change.added_tasks,
           removed_tasks: change.removed_tasks,
           updated_tasks: change.updated_tasks,

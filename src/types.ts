@@ -27,6 +27,24 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const FINAL_TASK_STATUSES = ["completed", "failed", "timeout", "stopped"] as const;
 export type FinalTaskStatus = (typeof FINAL_TASK_STATUSES)[number];
 
+export const SUPERVISOR_STATES = [
+  "active",
+  "planning",
+  "dispatching",
+  "waiting",
+  "sleeping",
+  "reviewing",
+  "blocked",
+  "completed",
+] as const;
+export type SupervisorStateValue = (typeof SUPERVISOR_STATES)[number];
+
+export const WAKE_PRIORITIES = ["low", "medium", "high", "critical"] as const;
+export type WakePriority = (typeof WAKE_PRIORITIES)[number];
+
+export const REPORT_LEVELS = ["summary", "full", "raw"] as const;
+export type ReportLevel = (typeof REPORT_LEVELS)[number];
+
 export interface CcRunTaskInput {
   project_path: string;
   task: string;
@@ -134,6 +152,7 @@ export interface AgentForemanState {
     worker: number;
     task: number;
     event: number;
+    notification: number;
     permission: number;
     rule: number;
     artifact: number;
@@ -144,6 +163,8 @@ export interface AgentForemanState {
   workers: Record<string, WorkerRecord>;
   tasks: Record<string, TaskRecord>;
   events: EventRecord[];
+  supervisor_states: Record<string, SupervisorStateRecord>;
+  notifications: Record<string, SupervisorNotificationRecord>;
   permission_requests: Record<string, PermissionRequestRecord>;
   permission_rules: Record<string, PermissionRuleRecord>;
   artifacts: Record<string, ArtifactRecord>;
@@ -192,7 +213,9 @@ export interface GetStatusInput {
 }
 
 export interface GetReportInput {
-  task_id: string;
+  task_id?: string;
+  report_id?: string;
+  level?: ReportLevel;
 }
 
 export interface TaskReport {
@@ -293,6 +316,8 @@ export type EventType =
   | "worker_deleted"
   | "worker_stopped"
   | "worker_restarted"
+  | "worker_stalled"
+  | "worker_crashed"
   | "worker_health_checked"
   | "idle_workers_cleaned"
   | "task_created"
@@ -300,6 +325,7 @@ export type EventType =
   | "task_ready"
   | "task_blocked"
   | "task_skipped"
+  | "dag_unblocked"
   | "task_started"
   | "task_completed"
   | "task_failed"
@@ -308,17 +334,125 @@ export type EventType =
   | "permission_requested"
   | "permission_approved"
   | "permission_rejected"
+  | "partial_report_ready"
   | "report_created"
   | "patch_created"
+  | "patch_generated"
+  | "test_completed"
+  | "review_completed"
+  | "all_tasks_completed"
   | "worktree_created"
   | "worktree_cleanup"
   | "worktree_fallback"
   | "plan_created"
   | "plan_updated"
+  | "plan_completed"
   | "plan_task_linked"
   | "session_created"
   | "session_cleaned"
-  | "metrics_collected";
+  | "metrics_collected"
+  | "metrics_updated"
+  | "worker_stdout_chunk"
+  | "heartbeat"
+  | "file_read"
+  | "stage_changed"
+  | "minor_progress"
+  | "log_updated";
+
+export type WakeEventType =
+  | EventType
+  | "permission_requested"
+  | "patch_generated"
+  | "test_completed"
+  | "review_completed"
+  | "dag_unblocked";
+
+export interface SupervisorStateRecord {
+  key: string;
+  project_id: string;
+  plan_id?: string;
+  state: SupervisorStateValue;
+  reason?: string;
+  updated_at: string;
+}
+
+export interface SupervisorNotificationRecord {
+  notification_id: string;
+  project_id?: string;
+  plan_id?: string;
+  event_id: number;
+  type: WakeEventType;
+  priority: WakePriority;
+  requires_action: boolean;
+  read: boolean;
+  task_id?: string;
+  worker_id?: string;
+  role?: WorkerRole;
+  summary: string;
+  report_id?: string;
+  patch_id?: string;
+  permission_request_id?: string;
+  recommended_next_actions: string[];
+  created_at: string;
+  read_at?: string;
+}
+
+export interface SetSupervisorStateInput {
+  project_id: string;
+  plan_id?: string;
+  state: SupervisorStateValue;
+  reason?: string;
+}
+
+export interface GetSupervisorStateInput {
+  project_id: string;
+  plan_id?: string;
+}
+
+export interface GetInboxInput {
+  project_id?: string;
+  plan_id?: string;
+  only_unread?: boolean;
+  min_priority?: WakePriority;
+  max_notifications?: number;
+}
+
+export interface MarkNotificationsReadInput {
+  notification_ids: string[];
+}
+
+export interface WaitForEventsInput {
+  project_id?: string;
+  plan_id?: string;
+  since_event_id?: number;
+  wake_on?: WakeEventType[];
+  timeout_sec?: number;
+  max_events?: number;
+}
+
+export interface CompactWakeContext {
+  active_tasks: number;
+  completed_tasks: number;
+  pending_permissions: number;
+  failed_tasks: number;
+  unread_reports: number;
+}
+
+export interface WakePacket {
+  woke: boolean;
+  wake_reason: WakeEventType | "timeout";
+  priority: WakePriority;
+  project_id?: string;
+  plan_id?: string;
+  latest_event_id: number;
+  notifications: SupervisorNotificationRecord[];
+  suggested_decision?: {
+    type: string;
+    reason: string;
+  };
+  compact_context: CompactWakeContext;
+  message?: string;
+}
 
 export interface ArtifactRecord {
   id: string;

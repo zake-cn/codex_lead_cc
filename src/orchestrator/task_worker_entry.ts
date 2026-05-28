@@ -171,7 +171,7 @@ async function finalizeTask(
       task_id: latestTaskRecord.id,
       worker_id: latestTaskRecord.worker_id,
       summary: `Report created for task ${latestTaskRecord.id}.`,
-      payload: { report_path: paths.displayReportPath },
+      payload: { report_id: artifactId, report_path: paths.displayReportPath },
     });
   });
 
