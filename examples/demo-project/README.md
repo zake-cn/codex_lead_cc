@@ -1,8 +1,8 @@
 # Demo Project
 
-This is a tiny project used by `codex_lead_cc` Phase 0 to verify that Claude Code can read a project and report back through the local orchestration CLI.
+This is a tiny project used by `codex_lead_cc` to verify the full local orchestration loop.
 
-Phase 2 also uses it as a small repair demo. `src/hello.py` intentionally leaves `normalize_name()` incomplete; the tests in `tests/test_hello.py` describe the expected behavior.
+Phase 3 uses it as the scout -> implementer -> tester -> reviewer demo. `src/hello.py` intentionally leaves `normalize_name()` incomplete; the tests in `tests/test_hello.py` describe the expected behavior.
 
 ## Structure
 

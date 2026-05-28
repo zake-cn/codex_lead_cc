@@ -1,0 +1,11 @@
+{
+  "benchmark_id": "docs_update",
+  "mode": "codex_lead_cc",
+  "goal": "Update README usage notes for a small project after inspecting code and tests.",
+  "workers": ["scout", "implementer", "reviewer"],
+  "success_criteria": [
+    "scout report describes current usage",
+    "implementer patch updates docs only",
+    "reviewer checks that docs match observed behavior"
+  ]
+}

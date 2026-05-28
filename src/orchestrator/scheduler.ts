@@ -2,11 +2,16 @@ import { loadConfig } from "../config/load_config.js";
 import type { TaskStatus } from "../types.js";
 import { appendEvent, nowIso, StateStore } from "./state_store.js";
 import { ProcessManager } from "./process_manager.js";
+import { DagScheduler } from "./dag_scheduler.js";
+import { PermissionEngine } from "./permission_engine.js";
+import { syncLinkedPlanTask } from "./plan_state.js";
 
 export class Scheduler {
   constructor(
     private readonly store: StateStore,
     private readonly processManager: ProcessManager,
+    private readonly dagScheduler = new DagScheduler(),
+    private readonly permissionEngine?: PermissionEngine,
   ) {}
 
   async schedule(): Promise<{ started_task_ids: string[]; running: number; max_concurrent_workers: number }> {
@@ -14,7 +19,21 @@ export class Scheduler {
     const maxConcurrent = config.max_concurrent_workers;
     const startedTaskIds: string[] = [];
 
+    await this.store.updateState((state) => {
+      this.dagScheduler.updateReadiness(state);
+    });
+
+    if (this.permissionEngine) {
+      const readyTasks = Object.values((await this.store.readState()).tasks)
+        .filter((task) => task.status === "ready")
+        .sort((a, b) => a.created_at.localeCompare(b.created_at));
+      for (const task of readyTasks) {
+        await this.permissionEngine.applyPermissionGate(task);
+      }
+    }
+
     const running = await this.store.updateState((state) => {
+      this.dagScheduler.updateReadiness(state);
       const runningCount = Object.values(state.tasks).filter((task) => task.status === "running").length;
       let slots = Math.max(0, maxConcurrent - runningCount);
       if (slots === 0) {
@@ -22,7 +41,7 @@ export class Scheduler {
       }
 
       const pendingTasks = Object.values(state.tasks)
-        .filter((task) => task.status === "pending")
+        .filter((task) => task.status === "ready")
         .sort((a, b) => a.created_at.localeCompare(b.created_at));
 
       for (const task of pendingTasks) {
@@ -39,9 +58,16 @@ export class Scheduler {
         task.status = "running";
         task.runner_pid = runnerPid;
         task.updated_at = timestamp;
+        syncLinkedPlanTask(state, task);
         worker.status = "running";
         worker.current_task_id = task.id;
         worker.updated_at = timestamp;
+        worker.last_active_at = timestamp;
+        const session = worker.session_id ? state.sessions[worker.session_id] : undefined;
+        if (session) {
+          session.status = "busy";
+          session.last_active_at = timestamp;
+        }
         appendEvent(state, {
           type: "task_started",
           project_id: task.project_id,

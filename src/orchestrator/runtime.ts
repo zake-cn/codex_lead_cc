@@ -7,6 +7,10 @@ import { PermissionEngine } from "./permission_engine.js";
 import { Scheduler } from "./scheduler.js";
 import { WorktreeManager } from "./worktree_manager.js";
 import { DiffManager } from "./diff_manager.js";
+import { PlanManager } from "./plan_manager.js";
+import { DagScheduler } from "./dag_scheduler.js";
+import { SessionManager } from "./session_manager.js";
+import { MetricsCollector } from "./metrics_collector.js";
 
 export interface OrchestratorRuntime {
   store: StateStore;
@@ -15,23 +19,32 @@ export interface OrchestratorRuntime {
   events: EventLog;
   permissions: PermissionEngine;
   scheduler: Scheduler;
+  dag: DagScheduler;
   worktrees: WorktreeManager;
   diffs: DiffManager;
+  plans: PlanManager;
+  sessions: SessionManager;
+  metrics: MetricsCollector;
 }
 
 export function createRuntime(stateDir?: string): OrchestratorRuntime {
   const store = new StateStore(stateDir);
   const processManager = new ProcessManager();
   const permissions = new PermissionEngine(store);
-  const scheduler = new Scheduler(store, processManager);
+  const dag = new DagScheduler();
+  const scheduler = new Scheduler(store, processManager, dag, permissions);
   return {
     store,
     workers: new WorkerManager(store),
-    tasks: new TaskManager(store, processManager, permissions, scheduler),
+    tasks: new TaskManager(store, processManager, scheduler),
     events: new EventLog(store),
     permissions,
     scheduler,
+    dag,
     worktrees: new WorktreeManager(store),
     diffs: new DiffManager(store),
+    plans: new PlanManager(store),
+    sessions: new SessionManager(store),
+    metrics: new MetricsCollector(store),
   };
 }

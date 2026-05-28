@@ -1,15 +1,22 @@
 export type WorkerRole = "scout" | "implementer" | "tester" | "reviewer";
 
-export type WorkerStatus = "idle" | "pending" | "running" | "stopped";
+export type WorkerRuntime = "claude_cli" | "claude_sdk";
+
+export type WorkerStatus = "idle" | "pending" | "running" | "busy" | "stopped" | "crashed";
+
+export type WorkerHealthStatus = "healthy" | "idle" | "busy" | "idle_timeout" | "stopped" | "crashed";
 
 export type TaskStatus =
   | "pending"
+  | "blocked"
+  | "ready"
   | "waiting_permission"
   | "running"
   | "completed"
   | "failed"
   | "timeout"
-  | "stopped";
+  | "stopped"
+  | "skipped";
 
 export type FinalTaskStatus = "completed" | "failed" | "timeout" | "stopped";
 
@@ -59,11 +66,15 @@ export interface WorkerRecord {
   id: string;
   role: WorkerRole;
   status: WorkerStatus;
+  runtime?: WorkerRuntime;
+  session_id?: string;
   project_id: string;
   project_path: string;
   worktree_mode?: "readonly" | "isolated" | "direct";
   worktree_path?: string;
   current_task_id?: string;
+  last_active_at?: string;
+  idle_timeout_sec?: number;
   created_at: string;
   updated_at: string;
 }
@@ -78,6 +89,12 @@ export interface TaskRecord {
   target_task_id?: string;
   task: string;
   status: TaskStatus;
+  depends_on?: string[];
+  blocked_by?: string[];
+  plan_id?: string;
+  plan_version?: number;
+  plan_task_id?: string;
+  runtime?: WorkerRuntime;
   timeout_sec: number;
   runner_pid?: number;
   claude_pid?: number;
@@ -105,7 +122,7 @@ export interface TaskRecord {
 }
 
 export interface AgentForemanState {
-  version: 2;
+  version: number;
   counters: {
     worker: number;
     task: number;
@@ -113,6 +130,9 @@ export interface AgentForemanState {
     permission: number;
     rule: number;
     artifact: number;
+    plan: number;
+    plan_change: number;
+    session: number;
   };
   workers: Record<string, WorkerRecord>;
   tasks: Record<string, TaskRecord>;
@@ -120,6 +140,9 @@ export interface AgentForemanState {
   permission_requests: Record<string, PermissionRequestRecord>;
   permission_rules: Record<string, PermissionRuleRecord>;
   artifacts: Record<string, ArtifactRecord>;
+  plans: Record<string, PlanRecord>;
+  plan_changes: Record<string, PlanChangeRecord>;
+  sessions: Record<string, WorkerSessionRecord>;
 }
 
 export interface CreateWorkerInput {
@@ -127,6 +150,8 @@ export interface CreateWorkerInput {
   role: WorkerRole;
   project_id?: string;
   worktree_mode?: "readonly" | "isolated" | "direct";
+  runtime?: WorkerRuntime;
+  idle_timeout_sec?: number;
 }
 
 export interface AssignTaskInput {
@@ -134,6 +159,9 @@ export interface AssignTaskInput {
   task: string;
   timeout_sec?: number;
   target_task_id?: string;
+  depends_on?: string[];
+  plan_id?: string;
+  plan_task_id?: string;
 }
 
 export interface StopTaskInput {
@@ -193,6 +221,12 @@ export type ReportType = "scout" | "implementation" | "test" | "review" | "task"
 export interface AgentForemanConfig {
   max_concurrent_workers: number;
   permission_rules: Array<Omit<PermissionRuleRecord, "id" | "created_at">>;
+  runtime: {
+    default_adapter: WorkerRuntime;
+    enable_sdk_adapter: boolean;
+    fallback_to_cli: boolean;
+  };
+  worker_idle_timeout_sec: number;
 }
 
 export type PermissionEffect = "allow" | "ask" | "deny";
@@ -251,8 +285,14 @@ export type EventType =
   | "worker_created"
   | "worker_deleted"
   | "worker_stopped"
+  | "worker_restarted"
+  | "worker_health_checked"
+  | "idle_workers_cleaned"
   | "task_created"
   | "task_queued"
+  | "task_ready"
+  | "task_blocked"
+  | "task_skipped"
   | "task_started"
   | "task_completed"
   | "task_failed"
@@ -265,7 +305,13 @@ export type EventType =
   | "patch_created"
   | "worktree_created"
   | "worktree_cleanup"
-  | "worktree_fallback";
+  | "worktree_fallback"
+  | "plan_created"
+  | "plan_updated"
+  | "plan_task_linked"
+  | "session_created"
+  | "session_cleaned"
+  | "metrics_collected";
 
 export interface ArtifactRecord {
   id: string;
@@ -318,6 +364,197 @@ export interface ListTasksInput {
 export interface CleanupWorktreeInput {
   task_id?: string;
   worker_id?: string;
+}
+
+export type PlanStatus = "active" | "completed" | "archived";
+export type PlanTaskStatus = TaskStatus | "planned";
+
+export interface PlanTaskSpec {
+  role: WorkerRole;
+  goal: string;
+  depends_on?: string[];
+  worker_id?: string;
+  task_id?: string;
+}
+
+export interface PlanTaskNode extends PlanTaskSpec {
+  plan_task_id: string;
+  status: PlanTaskStatus;
+}
+
+export interface PlanSnapshot {
+  version: number;
+  status: PlanStatus;
+  goal: string;
+  tasks: PlanTaskNode[];
+  reason?: string;
+  created_at: string;
+}
+
+export interface PlanRecord {
+  plan_id: string;
+  project_id: string;
+  version: number;
+  goal: string;
+  status: PlanStatus;
+  tasks: PlanTaskNode[];
+  history: PlanSnapshot[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PlanChangeRecord {
+  change_id: string;
+  plan_id: string;
+  project_id: string;
+  from_version: number;
+  to_version: number;
+  reason: string;
+  added_tasks: string[];
+  removed_tasks: string[];
+  updated_tasks: string[];
+  created_at: string;
+}
+
+export interface CreatePlanInput {
+  project_id: string;
+  goal: string;
+  tasks?: PlanTaskSpec[];
+}
+
+export interface GetPlanInput {
+  plan_id: string;
+  version?: number;
+}
+
+export interface UpdatePlanTaskInput {
+  plan_task_id: string;
+  goal?: string;
+  status?: PlanTaskStatus;
+  depends_on?: string[];
+  worker_id?: string;
+  task_id?: string;
+}
+
+export interface UpdatePlanInput {
+  plan_id: string;
+  reason: string;
+  add_tasks?: PlanTaskSpec[];
+  update_tasks?: UpdatePlanTaskInput[];
+  remove_tasks?: string[];
+  status?: PlanStatus;
+  goal?: string;
+}
+
+export interface ListPlansInput {
+  project_id?: string;
+  status?: PlanStatus;
+}
+
+export interface WorkerSessionRecord {
+  session_id: string;
+  worker_id: string;
+  runtime: WorkerRuntime;
+  project_id: string;
+  role: WorkerRole;
+  status: "idle" | "busy" | "stopped" | "crashed";
+  created_at: string;
+  last_active_at: string;
+  idle_timeout_sec: number;
+  metadata: Record<string, unknown>;
+}
+
+export interface RestartWorkerInput {
+  worker_id: string;
+  reason?: string;
+}
+
+export interface GetWorkerHealthInput {
+  worker_id?: string;
+  project_id?: string;
+}
+
+export interface CleanupIdleWorkersInput {
+  project_id?: string;
+  idle_timeout_sec?: number;
+  dry_run?: boolean;
+}
+
+export interface WorkerHealthReport {
+  worker_id: string;
+  status: WorkerStatus;
+  health_status: WorkerHealthStatus;
+  runtime: WorkerRuntime;
+  session_id: string | null;
+  current_task_id: string | null;
+  last_active_at: string | null;
+  idle_for_ms: number | null;
+  idle_timeout_sec: number;
+}
+
+export interface MetricsInput {
+  project_id?: string;
+  plan_id?: string;
+}
+
+export interface MetricsReport {
+  project_id?: string;
+  plan_id?: string;
+  tasks_total: number;
+  tasks_completed: number;
+  tasks_failed: number;
+  tasks_running: number;
+  success_rate: number;
+  total_runtime_ms: number;
+  raw_log_bytes: number;
+  structured_report_bytes: number;
+  compression_ratio: number;
+  workers_total: number;
+  worker_runtime: Record<WorkerRuntime, number>;
+  permission_requests: number;
+  patches_generated: number;
+  estimated_supervisor_context_saved: "low" | "medium" | "high";
+}
+
+export interface StartTaskInput {
+  task: TaskRecord;
+  prompt: string;
+  execution_path: string;
+}
+
+export interface StartTaskResult {
+  task_id: string;
+  runtime: WorkerRuntime;
+  pid?: number;
+}
+
+export interface StopTaskResult {
+  task_id: string;
+  stopped: boolean;
+  message: string;
+}
+
+export interface TaskRuntimeStatus {
+  task_id: string;
+  runtime: WorkerRuntime;
+  status: TaskStatus;
+  pid?: number;
+}
+
+export interface WorkerRuntimeEvent {
+  task_id: string;
+  type: string;
+  time: string;
+  payload: Record<string, unknown>;
+}
+
+export interface ClaudeCodeAdapter {
+  readonly runtime: WorkerRuntime;
+  startTask(input: StartTaskInput): Promise<StartTaskResult>;
+  stopTask(taskId: string): Promise<StopTaskResult>;
+  getStatus(taskId: string): Promise<TaskRuntimeStatus>;
+  streamEvents?(taskId: string): AsyncIterable<WorkerRuntimeEvent>;
+  cleanup?(workerId: string): Promise<void>;
 }
 
 export interface DiffSummary {

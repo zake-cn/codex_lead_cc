@@ -5,6 +5,7 @@ import { startClaudeCli } from "../claude/claude_cli_runner.js";
 import { buildTaskReport, summarizeTaskReport } from "../report/build_report.js";
 import type { ClaudeCliRunResult, FinalTaskStatus, TaskRecord } from "../types.js";
 import { createRuntime } from "./runtime.js";
+import { syncLinkedPlanTask } from "./plan_state.js";
 import { appendEvent, nowIso, StateStore } from "./state_store.js";
 
 async function main(): Promise<void> {
@@ -34,6 +35,7 @@ async function main(): Promise<void> {
       latestTask.worktree_mode = execution.worktreeMode;
       latestTask.base_branch = execution.baseBranch;
       latestTask.updated_at = nowIso();
+      syncLinkedPlanTask(latest, latestTask);
     }
   });
 
@@ -57,12 +59,19 @@ async function main(): Promise<void> {
     latestTask.started_at = latestTask.started_at ?? startedAt;
     latestTask.updated_at = startedAt;
     latestTask.claude_pid = running.pid;
+    syncLinkedPlanTask(latest, latestTask);
 
     const worker = latest.workers[latestTask.worker_id];
     if (worker) {
       worker.status = "running";
       worker.current_task_id = latestTask.id;
       worker.updated_at = startedAt;
+      worker.last_active_at = startedAt;
+      const session = worker.session_id ? latest.sessions[worker.session_id] : undefined;
+      if (session) {
+        session.status = "busy";
+        session.last_active_at = startedAt;
+      }
     }
   });
 
@@ -136,12 +145,19 @@ async function finalizeTask(
     latestTaskRecord.duration_ms = result.durationMs;
     latestTaskRecord.updated_at = finishedAt;
     delete latestTaskRecord.claude_pid;
+    syncLinkedPlanTask(latest, latestTaskRecord);
 
     const worker = latest.workers[latestTaskRecord.worker_id];
     if (worker && worker.current_task_id === latestTaskRecord.id) {
       worker.status = worker.status === "stopped" ? "stopped" : "idle";
       delete worker.current_task_id;
       worker.updated_at = finishedAt;
+      worker.last_active_at = finishedAt;
+      const session = worker.session_id ? latest.sessions[worker.session_id] : undefined;
+      if (session) {
+        session.status = worker.status === "stopped" ? "stopped" : "idle";
+        session.last_active_at = finishedAt;
+      }
     }
     appendEvent(latest, {
       type: eventTypeForStatus(finalStatus),
@@ -202,12 +218,19 @@ async function failTaskBeforeRun(store: StateStore, task: TaskRecord, error: unk
       latestTask.finished_at = timestamp;
       latestTask.duration_ms = 0;
       latestTask.updated_at = timestamp;
+      syncLinkedPlanTask(state, latestTask);
     }
     const worker = state.workers[task.worker_id];
     if (worker && worker.current_task_id === task.id) {
       worker.status = "idle";
       delete worker.current_task_id;
       worker.updated_at = timestamp;
+      worker.last_active_at = timestamp;
+      const session = worker.session_id ? state.sessions[worker.session_id] : undefined;
+      if (session) {
+        session.status = "idle";
+        session.last_active_at = timestamp;
+      }
     }
     appendEvent(state, {
       type: "task_failed",

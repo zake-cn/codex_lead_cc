@@ -12,6 +12,7 @@ import type {
   WorkerRole,
 } from "../types.js";
 import { appendEvent, nextId, nowIso, StateStore } from "./state_store.js";
+import { syncLinkedPlanTask } from "./plan_state.js";
 
 export class PermissionEngine {
   constructor(private readonly store: StateStore) {}
@@ -72,6 +73,7 @@ export class PermissionEngine {
         task.status = "pending";
         task.permission_request_id = undefined;
         task.updated_at = timestamp;
+        syncLinkedPlanTask(state, task);
       }
 
       appendEvent(state, {
@@ -121,11 +123,18 @@ export class PermissionEngine {
         task.summary = `Task blocked by rejected permission: ${reason}`;
         task.finished_at = timestamp;
         task.updated_at = timestamp;
+        syncLinkedPlanTask(state, task);
         const worker = state.workers[task.worker_id];
         if (worker && worker.current_task_id === task.id) {
           worker.status = "idle";
           delete worker.current_task_id;
           worker.updated_at = timestamp;
+          worker.last_active_at = timestamp;
+          const session = worker.session_id ? state.sessions[worker.session_id] : undefined;
+          if (session) {
+            session.status = "idle";
+            session.last_active_at = timestamp;
+          }
         }
       }
 
@@ -185,11 +194,18 @@ export class PermissionEngine {
         latestTask.summary = latestTask.error;
         latestTask.finished_at = timestamp;
         latestTask.updated_at = timestamp;
+        syncLinkedPlanTask(state, latestTask);
         const worker = state.workers[latestTask.worker_id];
         if (worker && worker.current_task_id === latestTask.id) {
           worker.status = "idle";
           delete worker.current_task_id;
           worker.updated_at = timestamp;
+          worker.last_active_at = timestamp;
+          const session = worker.session_id ? state.sessions[worker.session_id] : undefined;
+          if (session) {
+            session.status = "idle";
+            session.last_active_at = timestamp;
+          }
         }
         appendEvent(state, {
           type: "task_failed",
@@ -224,6 +240,7 @@ export class PermissionEngine {
       latestTask.status = "waiting_permission";
       latestTask.permission_request_id = request.id;
       latestTask.updated_at = timestamp;
+      syncLinkedPlanTask(state, latestTask);
 
       appendEvent(state, {
         type: "permission_requested",

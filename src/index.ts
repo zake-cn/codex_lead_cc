@@ -1,42 +1,59 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 
+import { renderStatusDashboard, watchStatusDashboard } from "./dashboard/status_tui.js";
 import { startMcpServer } from "./mcp/server.js";
 import { ccApprovePermission } from "./tools/cc_approve_permission.js";
 import { ccAssignTask } from "./tools/cc_assign_task.js";
+import { ccCleanupIdleWorkers } from "./tools/cc_cleanup_idle_workers.js";
 import { ccCleanupWorktree } from "./tools/cc_cleanup_worktree.js";
+import { ccCreatePlan } from "./tools/cc_create_plan.js";
 import { ccCreateWorker } from "./tools/cc_create_worker.js";
 import { ccDeleteWorker } from "./tools/cc_delete_worker.js";
 import { ccGetDiffDetail } from "./tools/cc_get_diff_detail.js";
 import { ccGetDiffSummary } from "./tools/cc_get_diff_summary.js";
+import { ccGetMetrics } from "./tools/cc_get_metrics.js";
 import { ccGetPendingPermissions } from "./tools/cc_get_pending_permissions.js";
+import { ccGetPlan } from "./tools/cc_get_plan.js";
 import { ccGetReport } from "./tools/cc_get_report.js";
 import { ccGetStatus } from "./tools/cc_get_status.js";
 import { ccGetUpdates } from "./tools/cc_get_updates.js";
+import { ccGetWorkerHealth } from "./tools/cc_get_worker_health.js";
+import { ccListPlans } from "./tools/cc_list_plans.js";
 import { ccListTasks } from "./tools/cc_list_tasks.js";
 import { ccListWorkers } from "./tools/cc_list_workers.js";
 import { ccRejectPermission } from "./tools/cc_reject_permission.js";
+import { ccRestartWorker } from "./tools/cc_restart_worker.js";
 import { ccRunTask } from "./tools/cc_run_task.js";
 import { ccStopTask } from "./tools/cc_stop_task.js";
 import { ccStopWorker } from "./tools/cc_stop_worker.js";
+import { ccUpdatePlan } from "./tools/cc_update_plan.js";
 import type {
   AssignTaskInput,
   ApprovePermissionInput,
   CcRunTaskInput,
+  CleanupIdleWorkersInput,
   CleanupWorktreeInput,
+  CreatePlanInput,
   CreateWorkerInput,
   DeleteWorkerInput,
   GetDiffDetailInput,
   GetDiffSummaryInput,
+  GetPlanInput,
+  GetWorkerHealthInput,
+  ListPlansInput,
   GetPendingPermissionsInput,
   GetReportInput,
   GetStatusInput,
   GetUpdatesInput,
   ListTasksInput,
   ListWorkersInput,
+  MetricsInput,
   RejectPermissionInput,
+  RestartWorkerInput,
   StopTaskInput,
   StopWorkerInput,
+  UpdatePlanInput,
 } from "./types.js";
 
 async function main(): Promise<void> {
@@ -49,6 +66,11 @@ async function main(): Promise<void> {
 
   if (command === "mcp") {
     await startMcpServer();
+    return;
+  }
+
+  if (command === "status") {
+    await runStatusCommand(args);
     return;
   }
 
@@ -70,6 +92,8 @@ async function runCommand(command: string, args: string[]): Promise<unknown> {
         "--project-id": "project_id",
         "--role": "role",
         "--worktree-mode": "worktree_mode",
+        "--runtime": "runtime",
+        "--idle-timeout-sec": "idle_timeout_sec",
       }));
     case "cc_assign_task":
       return ccAssignTask(await parseToolInput<AssignTaskInput>(args, {
@@ -77,6 +101,9 @@ async function runCommand(command: string, args: string[]): Promise<unknown> {
         "--task": "task",
         "--timeout-sec": "timeout_sec",
         "--target-task-id": "target_task_id",
+        "--depends-on": "depends_on",
+        "--plan-id": "plan_id",
+        "--plan-task-id": "plan_task_id",
       }));
     case "cc_get_status":
       return ccGetStatus(await parseToolInput<GetStatusInput>(args, {
@@ -146,9 +173,82 @@ async function runCommand(command: string, args: string[]): Promise<unknown> {
         "--task-id": "task_id",
         "--worker-id": "worker_id",
       }));
+    case "cc_create_plan":
+      return ccCreatePlan(await parseToolInput<CreatePlanInput>(args, {
+        "--project-id": "project_id",
+        "--goal": "goal",
+      }));
+    case "cc_get_plan":
+      return ccGetPlan(await parseToolInput<GetPlanInput>(args, {
+        "--plan-id": "plan_id",
+        "--version": "version",
+      }));
+    case "cc_update_plan":
+      return ccUpdatePlan(await parseToolInput<UpdatePlanInput>(args, {
+        "--plan-id": "plan_id",
+        "--reason": "reason",
+        "--status": "status",
+        "--goal": "goal",
+      }));
+    case "cc_list_plans":
+      return ccListPlans(await parseToolInput<ListPlansInput>(args, {
+        "--project-id": "project_id",
+        "--status": "status",
+      }));
+    case "cc_get_metrics":
+      return ccGetMetrics(await parseToolInput<MetricsInput>(args, {
+        "--project-id": "project_id",
+        "--plan-id": "plan_id",
+      }));
+    case "cc_restart_worker":
+      return ccRestartWorker(await parseToolInput<RestartWorkerInput>(args, {
+        "--worker-id": "worker_id",
+        "--reason": "reason",
+      }));
+    case "cc_get_worker_health":
+      return ccGetWorkerHealth(await parseToolInput<GetWorkerHealthInput>(args, {
+        "--worker-id": "worker_id",
+        "--project-id": "project_id",
+      }));
+    case "cc_cleanup_idle_workers":
+      return ccCleanupIdleWorkers(await parseToolInput<CleanupIdleWorkersInput>(args, {
+        "--project-id": "project_id",
+        "--idle-timeout-sec": "idle_timeout_sec",
+        "--dry-run": "dry_run",
+      }));
     default:
       throw new Error(`Unknown command: ${command}`);
   }
+}
+
+async function runStatusCommand(args: string[]): Promise<void> {
+  let projectId: string | undefined;
+  let watch = false;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    const next = args[index + 1];
+    if (arg === "--project-id") {
+      if (!next) {
+        throw new Error("--project-id requires a value.");
+      }
+      projectId = next;
+      index += 1;
+      continue;
+    }
+    if (arg === "--watch") {
+      watch = true;
+      continue;
+    }
+    throw new Error(`Unknown status argument: ${arg}`);
+  }
+
+  if (watch) {
+    await watchStatusDashboard(projectId);
+    return;
+  }
+
+  process.stdout.write(await renderStatusDashboard(projectId));
 }
 
 async function parseToolInput<T>(
@@ -189,6 +289,8 @@ async function parseToolInput<T>(
       index += 1;
       parsed[fieldName] = numericFields.has(fieldName)
         ? Number(next)
+        : arrayFields.has(fieldName)
+          ? next.split(",").map((item) => item.trim()).filter(Boolean)
         : booleanFields.has(fieldName)
           ? next === "true"
           : next;
@@ -218,13 +320,16 @@ async function readStdin(): Promise<string> {
 }
 
 function printHelp(): void {
-  process.stdout.write(`codex_lead_cc Phase 2 local CLI
+  process.stdout.write(`codex_lead_cc Phase 3 local CLI
 
 Usage:
   codex-lead-cc mcp
+  codex-lead-cc status [--project-id <project>] [--watch]
   codex-lead-cc cc_run_task --project-path <path> --task <task> [--timeout-sec 300]
-  codex-lead-cc cc_create_worker --project-path <path> --role <scout|implementer>
-  codex-lead-cc cc_assign_task --worker-id <ccw_001> --task <task> [--timeout-sec 300]
+  codex-lead-cc cc_create_worker --project-path <path> --role <scout|implementer|tester|reviewer>
+  codex-lead-cc cc_assign_task --worker-id <ccw_001> --task <task> [--depends-on task_001,task_002]
+  codex-lead-cc cc_create_plan --project-id <project> --goal <goal>
+  codex-lead-cc cc_get_plan --plan-id <plan_001>
   codex-lead-cc cc_get_status --task-id <task_001>
   codex-lead-cc cc_get_status --worker-id <ccw_001>
   codex-lead-cc cc_get_report --task-id <task_001>
@@ -261,6 +366,17 @@ Commands:
   cc_get_diff_summary
                      Read patch summary for an implementer task
   cc_get_diff_detail Read per-file diff for an implementer task
+  cc_create_plan     Create a supervisor plan with version history
+  cc_get_plan        Read active or historical plan version
+  cc_update_plan     Update a plan with a change reason
+  cc_list_plans      List plans
+  cc_get_metrics     Compute plan/project metrics
+  cc_restart_worker  Restart a worker session
+  cc_get_worker_health
+                     Read worker health/session status
+  cc_cleanup_idle_workers
+                     Stop idle worker sessions
+  status             Render a local status dashboard
   cc_list_workers    List workers
   cc_list_tasks      List tasks
   cc_cleanup_worktree
@@ -268,8 +384,9 @@ Commands:
 `);
 }
 
-const numericFields = new Set(["timeout_sec", "since_event_id"]);
-const booleanFields = new Set(["all"]);
+const numericFields = new Set(["timeout_sec", "since_event_id", "version", "idle_timeout_sec"]);
+const booleanFields = new Set(["all", "dry_run"]);
+const arrayFields = new Set(["depends_on"]);
 
 main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);

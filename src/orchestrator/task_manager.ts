@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 
 import { buildTaskReport, summarizeTaskReport } from "../report/build_report.js";
 import type {
+  AgentForemanState,
   AssignTaskInput,
   GetReportInput,
   GetStatusInput,
@@ -13,25 +14,24 @@ import type {
 } from "../types.js";
 import { appendEvent, nextId, nowIso, StateStore } from "./state_store.js";
 import { ProcessManager } from "./process_manager.js";
-import { PermissionEngine } from "./permission_engine.js";
 import { Scheduler } from "./scheduler.js";
+import { syncLinkedPlanTask } from "./plan_state.js";
 
 const DEFAULT_TIMEOUT_SEC = 300;
 const MAX_TIMEOUT_SEC = 3_600;
-const FINAL_STATUSES = new Set<TaskStatus>(["completed", "failed", "timeout", "stopped"]);
+const FINAL_STATUSES = new Set<TaskStatus>(["completed", "failed", "timeout", "stopped", "skipped"]);
 
 export class TaskManager {
   constructor(
     private readonly store: StateStore,
     private readonly processManager: ProcessManager,
-    private readonly permissionEngine: PermissionEngine,
     private readonly scheduler: Scheduler,
   ) {}
 
   async assignTask(input: AssignTaskInput): Promise<{
     task_id: string;
     worker_id: string;
-      status: TaskStatus;
+    status: TaskStatus;
   }> {
     const timeoutSec = normalizeTimeout(input.timeout_sec);
     const taskText = normalizeTask(input.task);
@@ -42,11 +42,11 @@ export class TaskManager {
       if (!worker) {
         throw new Error(`Worker not found: ${input.worker_id}`);
       }
-      if (worker.status === "running" || worker.status === "pending" || worker.current_task_id) {
+      if (worker.status === "running" || worker.status === "pending" || worker.status === "busy" || worker.current_task_id) {
         throw new Error(`Worker ${worker.id} is already running task ${worker.current_task_id}.`);
       }
-      if (worker.status === "stopped") {
-        throw new Error(`Worker ${worker.id} is stopped. Create a new worker before assigning tasks.`);
+      if (worker.status === "stopped" || worker.status === "crashed") {
+        throw new Error(`Worker ${worker.id} is ${worker.status}. Restart or create a new worker before assigning tasks.`);
       }
 
       state.counters.task += 1;
@@ -62,6 +62,12 @@ export class TaskManager {
         target_task_id: input.target_task_id,
         task: taskText,
         status: "pending",
+        depends_on: [...(input.depends_on ?? [])],
+        blocked_by: [...(input.depends_on ?? [])],
+        plan_id: input.plan_id,
+        plan_task_id: input.plan_task_id,
+        plan_version: input.plan_id ? state.plans[input.plan_id]?.version : undefined,
+        runtime: worker.runtime ?? "claude_cli",
         timeout_sec: timeoutSec,
         exit_code: null,
         log_path: paths.displayLogPath,
@@ -77,9 +83,13 @@ export class TaskManager {
       };
 
       state.tasks[id] = taskRecord;
+      if (input.plan_id || input.plan_task_id) {
+        linkTaskToPlan(state, taskRecord, input.plan_id, input.plan_task_id);
+      }
       worker.status = "pending";
       worker.current_task_id = id;
       worker.updated_at = timestamp;
+      worker.last_active_at = timestamp;
       appendEvent(state, {
         type: "task_created",
         project_id: taskRecord.project_id,
@@ -99,10 +109,7 @@ export class TaskManager {
       return taskRecord;
     });
 
-    const permissionResult = await this.permissionEngine.applyPermissionGate(createdTask);
-    if (permissionResult === "allow") {
-      await this.scheduler.schedule();
-    }
+    await this.scheduler.schedule();
 
     const finalStatus = await this.scheduler.taskStatus(createdTask.id);
 
@@ -120,6 +127,9 @@ export class TaskManager {
       return {
         workers: Object.values(state.workers),
         tasks: Object.values(state.tasks),
+        plans: Object.values(state.plans),
+        pending_permissions: Object.values(state.permission_requests).filter((request) => request.status === "pending"),
+        recent_events: state.events.slice(-20),
       };
     }
 
@@ -137,6 +147,11 @@ export class TaskManager {
         claude_pid: task.claude_pid,
         project_id: task.project_id,
         target_task_id: task.target_task_id ?? null,
+        depends_on: task.depends_on ?? [],
+        blocked_by: task.blocked_by ?? [],
+        plan_id: task.plan_id ?? null,
+        plan_version: task.plan_version ?? null,
+        plan_task_id: task.plan_task_id ?? null,
         worktree_path: task.worktree_path ?? null,
         patch_path: task.patch_path ?? null,
         started_at: task.started_at ?? null,
@@ -237,12 +252,19 @@ export class TaskManager {
         : 0;
       task.summary = "Task was stopped before completion. Partial output was captured.";
       pidToStop = task.claude_pid ?? task.runner_pid;
+      syncLinkedPlanTask(state, task);
 
       const worker = state.workers[task.worker_id];
       if (worker) {
         worker.status = "idle";
         delete worker.current_task_id;
         worker.updated_at = timestamp;
+        worker.last_active_at = timestamp;
+        const session = worker.session_id ? state.sessions[worker.session_id] : undefined;
+        if (session) {
+          session.status = "idle";
+          session.last_active_at = timestamp;
+        }
       }
       appendEvent(state, {
         type: "task_stopped",
@@ -294,6 +316,12 @@ export class TaskManager {
         if (latestWorker) {
           latestWorker.status = "stopped";
           latestWorker.updated_at = nowIso();
+          latestWorker.last_active_at = latestWorker.updated_at;
+          const session = latestWorker.session_id ? latest.sessions[latestWorker.session_id] : undefined;
+          if (session) {
+            session.status = "stopped";
+            session.last_active_at = latestWorker.updated_at;
+          }
           delete latestWorker.current_task_id;
         }
       });
@@ -312,6 +340,12 @@ export class TaskManager {
       }
       latestWorker.status = "stopped";
       latestWorker.updated_at = nowIso();
+      latestWorker.last_active_at = latestWorker.updated_at;
+      const session = latestWorker.session_id ? latest.sessions[latestWorker.session_id] : undefined;
+      if (session) {
+        session.status = "stopped";
+        session.last_active_at = latestWorker.updated_at;
+      }
       delete latestWorker.current_task_id;
     });
 
@@ -362,6 +396,64 @@ function defaultWorktreeMode(role: TaskRecord["role"]): TaskRecord["worktree_mod
     return "readonly";
   }
   return "direct";
+}
+
+function linkTaskToPlan(
+  state: AgentForemanState,
+  task: TaskRecord,
+  planId?: string,
+  planTaskId?: string,
+): void {
+  const plan = planId ? state.plans[planId] : undefined;
+  if (!plan && planId) {
+    throw new Error(`Plan not found: ${planId}`);
+  }
+
+  const targetPlan = plan ?? Object.values(state.plans).find((candidate) =>
+    candidate.tasks.some((planTask) => planTask.plan_task_id === planTaskId),
+  );
+  if (!targetPlan) {
+    if (planTaskId) {
+      throw new Error(`Plan task not found: ${planTaskId}`);
+    }
+    return;
+  }
+
+  const planTask = planTaskId
+    ? targetPlan.tasks.find((candidate) => candidate.plan_task_id === planTaskId)
+    : targetPlan.tasks.find((candidate) => candidate.role === task.role && !candidate.task_id);
+  if (!planTask) {
+    throw new Error(`Plan task not found for task ${task.id}.`);
+  }
+  if (planTask.role !== task.role) {
+    throw new Error(`Plan task ${planTask.plan_task_id} expects role ${planTask.role}, not ${task.role}.`);
+  }
+
+  planTask.task_id = task.id;
+  planTask.worker_id = task.worker_id;
+  planTask.status = task.status;
+  task.plan_id = targetPlan.plan_id;
+  task.plan_task_id = planTask.plan_task_id;
+  task.plan_version = targetPlan.version;
+  if ((task.depends_on ?? []).length === 0 && planTask.depends_on?.length) {
+    task.depends_on = [...planTask.depends_on]
+      .map((dependencyPlanTaskId) => targetPlan.tasks.find((candidate) => candidate.plan_task_id === dependencyPlanTaskId)?.task_id)
+      .filter((dependencyTaskId): dependencyTaskId is string => Boolean(dependencyTaskId));
+    task.blocked_by = [...task.depends_on];
+  }
+
+  appendEvent(state, {
+    type: "plan_task_linked",
+    project_id: targetPlan.project_id,
+    task_id: task.id,
+    worker_id: task.worker_id,
+    summary: `Linked task ${task.id} to ${targetPlan.plan_id} ${planTask.plan_task_id}.`,
+    payload: {
+      plan_id: targetPlan.plan_id,
+      plan_version: targetPlan.version,
+      plan_task_id: planTask.plan_task_id,
+    },
+  });
 }
 
 function normalizeTask(task: string): string {

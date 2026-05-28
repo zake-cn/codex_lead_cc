@@ -102,6 +102,12 @@ export function summarizeTaskReport(
   if (status === "pending") {
     return "Task is pending and has not started yet.";
   }
+  if (status === "blocked") {
+    return "Task is blocked by unfinished dependencies.";
+  }
+  if (status === "ready") {
+    return "Task is ready to run when a worker slot is available.";
+  }
   if (status === "waiting_permission") {
     return "Task is waiting for supervisor permission.";
   }
@@ -119,6 +125,9 @@ export function summarizeTaskReport(
     return stderrFirstLine
       ? `Claude Code CLI failed: ${stderrFirstLine}`
       : "Claude Code CLI failed.";
+  }
+  if (status === "skipped") {
+    return "Task was skipped because a dependency did not complete.";
   }
 
   return firstMeaningfulLine(stdout) ?? "Claude Code CLI completed successfully.";

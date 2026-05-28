@@ -4,25 +4,33 @@ import * as z from "zod/v4";
 
 import { ccApprovePermission } from "../tools/cc_approve_permission.js";
 import { ccAssignTask } from "../tools/cc_assign_task.js";
+import { ccCleanupIdleWorkers } from "../tools/cc_cleanup_idle_workers.js";
 import { ccCleanupWorktree } from "../tools/cc_cleanup_worktree.js";
+import { ccCreatePlan } from "../tools/cc_create_plan.js";
 import { ccCreateWorker } from "../tools/cc_create_worker.js";
 import { ccDeleteWorker } from "../tools/cc_delete_worker.js";
 import { ccGetDiffDetail } from "../tools/cc_get_diff_detail.js";
 import { ccGetDiffSummary } from "../tools/cc_get_diff_summary.js";
+import { ccGetMetrics } from "../tools/cc_get_metrics.js";
 import { ccGetPendingPermissions } from "../tools/cc_get_pending_permissions.js";
+import { ccGetPlan } from "../tools/cc_get_plan.js";
 import { ccGetReport } from "../tools/cc_get_report.js";
 import { ccGetStatus } from "../tools/cc_get_status.js";
 import { ccGetUpdates } from "../tools/cc_get_updates.js";
+import { ccGetWorkerHealth } from "../tools/cc_get_worker_health.js";
+import { ccListPlans } from "../tools/cc_list_plans.js";
 import { ccListTasks } from "../tools/cc_list_tasks.js";
 import { ccListWorkers } from "../tools/cc_list_workers.js";
 import { ccRejectPermission } from "../tools/cc_reject_permission.js";
+import { ccRestartWorker } from "../tools/cc_restart_worker.js";
 import { ccStopTask } from "../tools/cc_stop_task.js";
 import { ccStopWorker } from "../tools/cc_stop_worker.js";
+import { ccUpdatePlan } from "../tools/cc_update_plan.js";
 
 export async function startMcpServer(): Promise<void> {
   const server = new McpServer({
     name: "codex_lead_cc",
-    version: "0.3.0",
+    version: "0.4.0",
   });
 
   server.registerTool(
@@ -35,6 +43,8 @@ export async function startMcpServer(): Promise<void> {
         project_id: z.string().min(1).optional(),
         role: z.enum(["scout", "implementer", "tester", "reviewer"]),
         worktree_mode: z.enum(["readonly", "isolated", "direct"]).optional(),
+        runtime: z.enum(["claude_cli", "claude_sdk"]).optional(),
+        idle_timeout_sec: z.number().int().positive().optional(),
       },
     },
     async (input) => toolResult(await ccCreateWorker(input)),
@@ -51,6 +61,9 @@ export async function startMcpServer(): Promise<void> {
         task: z.string().min(1),
         timeout_sec: z.number().int().positive().optional(),
         target_task_id: z.string().min(1).optional(),
+        depends_on: z.array(z.string().min(1)).optional(),
+        plan_id: z.string().min(1).optional(),
+        plan_task_id: z.string().min(1).optional(),
       },
     },
     async (input) => toolResult(await ccAssignTask(input)),
@@ -203,7 +216,7 @@ export async function startMcpServer(): Promise<void> {
       description: "List workers by optional project or status.",
       inputSchema: {
         project_id: z.string().min(1).optional(),
-        status: z.enum(["idle", "pending", "running", "stopped"]).optional(),
+        status: z.enum(["idle", "pending", "running", "busy", "stopped", "crashed"]).optional(),
       },
     },
     async (input) => toolResult(await ccListWorkers(input)),
@@ -217,7 +230,7 @@ export async function startMcpServer(): Promise<void> {
       inputSchema: {
         project_id: z.string().min(1).optional(),
         status: z
-          .enum(["pending", "waiting_permission", "running", "completed", "failed", "timeout", "stopped"])
+          .enum(["pending", "blocked", "ready", "waiting_permission", "running", "completed", "failed", "timeout", "stopped", "skipped"])
           .optional(),
         worker_id: z.string().min(1).optional(),
       },
@@ -236,6 +249,148 @@ export async function startMcpServer(): Promise<void> {
       },
     },
     async (input) => toolResult(await ccCleanupWorktree(input)),
+  );
+
+  server.registerTool(
+    "cc_create_plan",
+    {
+      title: "Create Plan",
+      description: "Create a supervisor plan with versioned task nodes.",
+      inputSchema: {
+        project_id: z.string().min(1),
+        goal: z.string().min(1),
+        tasks: z
+          .array(
+            z.object({
+              role: z.enum(["scout", "implementer", "tester", "reviewer"]),
+              goal: z.string().min(1),
+              depends_on: z.array(z.string().min(1)).optional(),
+              worker_id: z.string().min(1).optional(),
+              task_id: z.string().min(1).optional(),
+            }),
+          )
+          .optional(),
+      },
+    },
+    async (input) => toolResult(await ccCreatePlan(input)),
+  );
+
+  server.registerTool(
+    "cc_get_plan",
+    {
+      title: "Get Plan",
+      description: "Get the active plan or a historical plan version.",
+      inputSchema: {
+        plan_id: z.string().min(1),
+        version: z.number().int().positive().optional(),
+      },
+    },
+    async (input) => toolResult(await ccGetPlan(input)),
+  );
+
+  server.registerTool(
+    "cc_update_plan",
+    {
+      title: "Update Plan",
+      description: "Update a plan and record a change reason.",
+      inputSchema: {
+        plan_id: z.string().min(1),
+        reason: z.string().min(1),
+        goal: z.string().min(1).optional(),
+        status: z.enum(["active", "completed", "archived"]).optional(),
+        add_tasks: z
+          .array(
+            z.object({
+              role: z.enum(["scout", "implementer", "tester", "reviewer"]),
+              goal: z.string().min(1),
+              depends_on: z.array(z.string().min(1)).optional(),
+              worker_id: z.string().min(1).optional(),
+              task_id: z.string().min(1).optional(),
+            }),
+          )
+          .optional(),
+        update_tasks: z
+          .array(
+            z.object({
+              plan_task_id: z.string().min(1),
+              goal: z.string().min(1).optional(),
+              status: z.enum(["planned", "pending", "blocked", "ready", "waiting_permission", "running", "completed", "failed", "timeout", "stopped", "skipped"]).optional(),
+              depends_on: z.array(z.string().min(1)).optional(),
+              worker_id: z.string().min(1).optional(),
+              task_id: z.string().min(1).optional(),
+            }),
+          )
+          .optional(),
+        remove_tasks: z.array(z.string().min(1)).optional(),
+      },
+    },
+    async (input) => toolResult(await ccUpdatePlan(input)),
+  );
+
+  server.registerTool(
+    "cc_list_plans",
+    {
+      title: "List Plans",
+      description: "List plans by optional project or status.",
+      inputSchema: {
+        project_id: z.string().min(1).optional(),
+        status: z.enum(["active", "completed", "archived"]).optional(),
+      },
+    },
+    async (input) => toolResult(await ccListPlans(input)),
+  );
+
+  server.registerTool(
+    "cc_get_metrics",
+    {
+      title: "Get Metrics",
+      description: "Compute project or plan metrics from local logs, reports, tasks, and permissions.",
+      inputSchema: {
+        project_id: z.string().min(1).optional(),
+        plan_id: z.string().min(1).optional(),
+      },
+    },
+    async (input) => toolResult(await ccGetMetrics(input)),
+  );
+
+  server.registerTool(
+    "cc_restart_worker",
+    {
+      title: "Restart Worker",
+      description: "Restart a stopped or crashed worker session.",
+      inputSchema: {
+        worker_id: z.string().min(1),
+        reason: z.string().optional(),
+      },
+    },
+    async (input) => toolResult(await ccRestartWorker(input)),
+  );
+
+  server.registerTool(
+    "cc_get_worker_health",
+    {
+      title: "Get Worker Health",
+      description: "Read worker health and session metadata.",
+      inputSchema: {
+        worker_id: z.string().min(1).optional(),
+        project_id: z.string().min(1).optional(),
+      },
+    },
+    async (input) => toolResult(await ccGetWorkerHealth(input)),
+  );
+
+  server.registerTool(
+    "cc_cleanup_idle_workers",
+    {
+      title: "Cleanup Idle Workers",
+      description: "Stop worker sessions that have been idle beyond their timeout.",
+      inputSchema: {
+        project_id: z.string().min(1).optional(),
+        idle_timeout_sec: z.number().int().positive().optional(),
+        dry_run: z.boolean().optional(),
+      },
+    },
+    async (input) => toolResult(await ccCleanupIdleWorkers(input)),
   );
 
   const transport = new StdioServerTransport();

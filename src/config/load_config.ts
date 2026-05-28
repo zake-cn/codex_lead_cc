@@ -13,6 +13,8 @@ export async function loadConfig(projectPath?: string): Promise<AgentForemanConf
 
   let merged: AgentForemanConfig = {
     max_concurrent_workers: DEFAULT_CONFIG.max_concurrent_workers,
+    runtime: { ...DEFAULT_CONFIG.runtime },
+    worker_idle_timeout_sec: DEFAULT_CONFIG.worker_idle_timeout_sec,
     permission_rules: [...DEFAULT_CONFIG.permission_rules],
   };
 
@@ -25,6 +27,12 @@ export async function loadConfig(projectPath?: string): Promise<AgentForemanConf
     merged = {
       max_concurrent_workers:
         parsed.max_concurrent_workers ?? merged.max_concurrent_workers,
+      runtime: {
+        ...merged.runtime,
+        ...(parsed.runtime ?? {}),
+      },
+      worker_idle_timeout_sec:
+        parsed.worker_idle_timeout_sec ?? merged.worker_idle_timeout_sec,
       permission_rules: parsed.permission_rules
         ? [...merged.permission_rules, ...parsed.permission_rules]
         : merged.permission_rules,
@@ -33,6 +41,9 @@ export async function loadConfig(projectPath?: string): Promise<AgentForemanConf
 
   if (!Number.isInteger(merged.max_concurrent_workers) || merged.max_concurrent_workers < 1) {
     throw new Error("max_concurrent_workers must be a positive integer.");
+  }
+  if (!Number.isInteger(merged.worker_idle_timeout_sec) || merged.worker_idle_timeout_sec < 1) {
+    throw new Error("worker_idle_timeout_sec must be a positive integer.");
   }
 
   return merged;

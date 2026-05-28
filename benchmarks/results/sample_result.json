@@ -1,0 +1,15 @@
+{
+  "benchmark_id": "bugfix_csv_escape",
+  "mode": "codex_lead_cc",
+  "success": true,
+  "runtime_ms": 82000,
+  "workers_used": ["scout", "implementer", "tester", "reviewer"],
+  "permission_requests": 1,
+  "tests_passed": true,
+  "patch_generated": true,
+  "review_decision": "approve",
+  "raw_log_bytes": 86000,
+  "report_bytes": 7600,
+  "compression_ratio": 11.32,
+  "user_interventions": 1
+}

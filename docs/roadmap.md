@@ -7,7 +7,7 @@ Completed.
 - `cc_run_task`
 - `claude -p`
 - stdout/stderr/exit code capture
-- JSON report
+- structured JSON report
 
 ## Phase 1: MVP Orchestrator
 
@@ -21,31 +21,45 @@ Completed.
 
 ## Phase 2: Engineering Controls
 
-Current phase.
+Completed.
 
 - Permission requests and approval tools
 - Event log and `cc_get_updates`
 - `tester` and `reviewer` roles
-- Basic queue and max concurrent workers
+- Basic queue and `max_concurrent_workers`
 - Git worktree isolation for implementer workers
 - Patch and diff summary artifacts
 - Role-aware structured reports
 - Demo flow: scout -> implementer -> tester -> reviewer
 
-## Phase 3: Deeper Agent Runtime
+## Phase 3: GitHub-Showcase Local Runtime
 
-- Claude Code permission hook adapter
-- More reliable command-level permission interception
-- Safer merge/apply flow for patches
-- Better stale process recovery
+Completed in this milestone.
+
+- Plan versioning and change reasons
+- Basic task DAG with blocked/ready/skipped transitions
+- Worker session metadata, health checks, restart, and idle cleanup
+- Claude Code adapter abstraction with CLI adapter and SDK fallback scaffold
+- Metrics for runtime, raw logs, structured reports, compression ratio, permissions, and patches
+- Benchmark task set and sample result
+- Local status dashboard with `status --watch`
+- Expanded README and architecture docs
+
+## Phase 4 Candidates
+
+- Real Claude Code SDK runtime implementation
+- Deeper command-level permission interception
+- Patch apply/merge flow with supervisor approval
 - Optional SQLite persistence
-- Optional PR creation
+- More complete benchmark harness
+- Optional read-only web dashboard
+- PR creation as an explicit opt-in action
 
-## Not Planned For Phase 2
+## Out Of Scope
 
-- Web dashboard
-- Distributed execution
-- Long-lived Claude session pool
-- Complex DAG scheduler
-- Cost accounting
 - Cloud service
+- Multi-user auth
+- Distributed execution
+- Model marketplace
+- Enterprise permission system
+- Automatic spending or API quota management

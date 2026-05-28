@@ -2,6 +2,12 @@ import type { AgentForemanConfig } from "../types.js";
 
 export const DEFAULT_CONFIG: AgentForemanConfig = {
   max_concurrent_workers: 3,
+  runtime: {
+    default_adapter: "claude_cli",
+    enable_sdk_adapter: false,
+    fallback_to_cli: true,
+  },
+  worker_idle_timeout_sec: 900,
   permission_rules: [
     {
       project_id: "*",

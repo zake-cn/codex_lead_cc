@@ -1,0 +1,11 @@
+{
+  "benchmark_id": "add_tests",
+  "mode": "codex_lead_cc",
+  "goal": "Add focused tests for the demo project without changing production behavior.",
+  "workers": ["implementer", "tester", "reviewer"],
+  "success_criteria": [
+    "patch only touches tests or docs unless implementation is required",
+    "tester report includes commands_run",
+    "diff summary lists changed files"
+  ]
+}

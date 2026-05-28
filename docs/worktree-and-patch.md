@@ -8,7 +8,7 @@ Implementer workers default to isolated git worktrees.
 .agentforeman/worktrees/task_004_impl/
 ```
 
-If the target project is not a git repository, Phase 2 records `worktree_fallback` and uses direct mode.
+If the target project is not a git repository, the orchestrator records `worktree_fallback` and uses direct mode. Git repositories are recommended for implementation tasks so patches are reviewable and isolated.
 
 ## Patch Artifacts
 
@@ -25,3 +25,5 @@ Codex can inspect these through:
 - `cc_get_diff_detail`
 
 `cc_get_diff_detail` returns only diff text for a selected file, not the full source file.
+
+Phase 3 keeps patch merge out of scope. Codex can review patch artifacts and decide the next action, but `codex_lead_cc` does not auto-merge or open pull requests.

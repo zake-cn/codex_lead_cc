@@ -5,10 +5,12 @@ import type {
   CreateWorkerInput,
   DeleteWorkerInput,
   ListWorkersInput,
+  WorkerRuntime,
   WorkerRecord,
   WorkerRole,
   WorkerStatus,
 } from "../types.js";
+import { loadConfig } from "../config/load_config.js";
 import { appendEvent, nextId, nowIso, StateStore } from "./state_store.js";
 
 const VALID_ROLES = new Set<WorkerRole>(["scout", "implementer", "tester", "reviewer"]);
@@ -18,30 +20,67 @@ export class WorkerManager {
 
   async createWorker(input: CreateWorkerInput): Promise<WorkerRecord> {
     const projectPath = await normalizeProjectPath(input.project_path);
+    const config = await loadConfig(projectPath);
     const role = normalizeRole(input.role);
+    const runtime = normalizeRuntime(input.runtime ?? config.runtime.default_adapter);
     const projectId = input.project_id ?? path.basename(projectPath);
     const timestamp = nowIso();
 
     return this.store.updateState((state) => {
       state.counters.worker += 1;
       const id = nextId("ccw", state.counters.worker);
+      state.counters.session += 1;
+      const sessionId = nextId("session", state.counters.session);
       const worker: WorkerRecord = {
         id,
         role,
         status: "idle",
+        runtime,
+        session_id: sessionId,
         project_id: projectId,
         project_path: projectPath,
         worktree_mode: input.worktree_mode ?? defaultWorktreeMode(role),
+        last_active_at: timestamp,
+        idle_timeout_sec: input.idle_timeout_sec ?? config.worker_idle_timeout_sec,
         created_at: timestamp,
         updated_at: timestamp,
       };
       state.workers[id] = worker;
+      state.sessions[sessionId] = {
+        session_id: sessionId,
+        worker_id: id,
+        runtime,
+        project_id: projectId,
+        role,
+        status: "idle",
+        created_at: timestamp,
+        last_active_at: timestamp,
+        idle_timeout_sec: worker.idle_timeout_sec ?? config.worker_idle_timeout_sec,
+        metadata: {
+          adapter_note:
+            runtime === "claude_sdk"
+              ? "SDK session metadata is reserved; Phase 3 falls back to CLI when SDK is unavailable."
+              : "CLI adapter uses per-task processes with reusable worker metadata.",
+        },
+      };
       appendEvent(state, {
         type: "worker_created",
         project_id: worker.project_id,
         worker_id: worker.id,
         summary: `Created ${role} worker ${worker.id}.`,
-        payload: { project_path: projectPath, worktree_mode: worker.worktree_mode },
+        payload: {
+          project_path: projectPath,
+          worktree_mode: worker.worktree_mode,
+          runtime,
+          session_id: sessionId,
+        },
+      });
+      appendEvent(state, {
+        type: "session_created",
+        project_id: worker.project_id,
+        worker_id: worker.id,
+        summary: `Created session ${sessionId} for worker ${worker.id}.`,
+        payload: { session_id: sessionId, runtime },
       });
       return worker;
     });
@@ -69,10 +108,16 @@ export class WorkerManager {
       }
       worker.status = args.status;
       worker.updated_at = timestamp;
+      worker.last_active_at = timestamp;
       if (args.currentTaskId) {
         worker.current_task_id = args.currentTaskId;
       } else {
         delete worker.current_task_id;
+      }
+      const session = worker.session_id ? state.sessions[worker.session_id] : undefined;
+      if (session) {
+        session.status = args.status === "running" || args.status === "pending" || args.status === "busy" ? "busy" : args.status === "stopped" ? "stopped" : args.status === "crashed" ? "crashed" : "idle";
+        session.last_active_at = timestamp;
       }
       return worker;
     });
@@ -84,8 +129,11 @@ export class WorkerManager {
       if (!worker) {
         throw new Error(`Worker not found: ${input.worker_id}`);
       }
-      if (worker.status === "running" || worker.current_task_id) {
+      if (worker.status === "running" || worker.status === "pending" || worker.status === "busy" || worker.current_task_id) {
         throw new Error(`Worker ${input.worker_id} has a running task and cannot be deleted.`);
+      }
+      if (worker.session_id) {
+        delete state.sessions[worker.session_id];
       }
       delete state.workers[input.worker_id];
       appendEvent(state, {
@@ -123,6 +171,13 @@ export function normalizeRole(role: string): WorkerRole {
     throw new Error("role must be one of: scout, implementer, tester, reviewer.");
   }
   return role as WorkerRole;
+}
+
+export function normalizeRuntime(runtime: string): WorkerRuntime {
+  if (runtime !== "claude_cli" && runtime !== "claude_sdk") {
+    throw new Error("runtime must be one of: claude_cli, claude_sdk.");
+  }
+  return runtime;
 }
 
 function defaultWorktreeMode(role: WorkerRole): WorkerRecord["worktree_mode"] {

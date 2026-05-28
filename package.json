@@ -1,6 +1,6 @@
 {
   "name": "codex_lead_cc",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Local Codex supervisor and Claude Code worker orchestration runtime.",
   "license": "MIT",
   "type": "module",
@@ -14,7 +14,8 @@
     "mcp": "node dist/index.js mcp",
     "demo": "node dist/index.js cc_run_task --project-path examples/demo-project --task \"Read this project and explain its structure and entry file.\" --timeout-sec 300",
     "demo:test": "python3 -m unittest discover -s examples/demo-project/tests",
-    "demo:worker": "node dist/index.js cc_create_worker --project-path examples/demo-project --role scout"
+    "demo:worker": "node dist/index.js cc_create_worker --project-path examples/demo-project --role scout",
+    "benchmark": "tsx benchmarks/run_benchmark.ts"
   },
   "keywords": [
     "codex",
