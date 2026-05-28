@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.agentforeman/
+.codex_lead_cc/
+*.log
+__pycache__/
+*.pyc
