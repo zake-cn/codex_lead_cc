@@ -2,6 +2,7 @@ import { mkdir, open, readFile, rename, stat, unlink, writeFile } from "node:fs/
 import path from "node:path";
 
 import type { AgentForemanState } from "../types.js";
+import { reportTypeForRole } from "../report/report_schema.js";
 
 const DEFAULT_STATE_DIR = ".agentforeman";
 
@@ -289,17 +290,7 @@ function normalizeState(raw: AgentForemanState): AgentForemanState {
     task.worktree_mode =
       task.worktree_mode ??
       (task.role === "implementer" ? "isolated" : task.role === "scout" || task.role === "reviewer" ? "readonly" : "direct");
-    task.report_type =
-      task.report_type ??
-      (task.role === "implementer"
-        ? "implementation"
-        : task.role === "tester"
-          ? "test"
-          : task.role === "reviewer"
-            ? "review"
-            : task.role === "scout"
-              ? "scout"
-              : "task");
+    task.report_type = task.report_type ?? reportTypeForRole(task.role);
     const paths = new StateStore().taskPaths(task.id);
     task.patch_path = task.patch_path ?? paths.displayPatchPath;
     task.diff_summary_path = task.diff_summary_path ?? paths.displayDiffSummaryPath;

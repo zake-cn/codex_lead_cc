@@ -1,6 +1,7 @@
 import { readFile, writeFile } from "node:fs/promises";
 
 import { buildTaskReport, summarizeTaskReport } from "../report/build_report.js";
+import { FINAL_TASK_STATUS_SET, reportTypeForRole } from "../report/report_schema.js";
 import type {
   AgentForemanState,
   AssignTaskInput,
@@ -16,11 +17,10 @@ import { appendEvent, nextId, nowIso, StateStore } from "./state_store.js";
 import { ProcessManager } from "./process_manager.js";
 import { Scheduler } from "./scheduler.js";
 import { syncLinkedPlanTask } from "./plan_state.js";
+import { setWorkerTaskState } from "./worker_state.js";
 
 const DEFAULT_TIMEOUT_SEC = 300;
 const MAX_TIMEOUT_SEC = 3_600;
-const FINAL_STATUSES = new Set<TaskStatus>(["completed", "failed", "timeout", "stopped", "skipped"]);
-
 export class TaskManager {
   constructor(
     private readonly store: StateStore,
@@ -86,10 +86,7 @@ export class TaskManager {
       if (input.plan_id || input.plan_task_id) {
         linkTaskToPlan(state, taskRecord, input.plan_id, input.plan_task_id);
       }
-      worker.status = "pending";
-      worker.current_task_id = id;
-      worker.updated_at = timestamp;
-      worker.last_active_at = timestamp;
+      setWorkerTaskState({ state, worker, status: "pending", timestamp, currentTaskId: id });
       appendEvent(state, {
         type: "task_created",
         project_id: taskRecord.project_id,
@@ -207,7 +204,7 @@ export class TaskManager {
       throw new Error(`Task not found: ${input.task_id}`);
     }
 
-    if (FINAL_STATUSES.has(task.status)) {
+    if (FINAL_TASK_STATUS_SET.has(task.status)) {
       const savedReport = await readJsonReport(task.report_path).catch(() => undefined);
       if (savedReport) {
         return savedReport;
@@ -238,7 +235,7 @@ export class TaskManager {
       if (!task) {
         throw new Error(`Task not found: ${input.task_id}`);
       }
-      alreadyFinal = FINAL_STATUSES.has(task.status);
+      alreadyFinal = FINAL_TASK_STATUS_SET.has(task.status);
       if (alreadyFinal) {
         return;
       }
@@ -256,15 +253,7 @@ export class TaskManager {
 
       const worker = state.workers[task.worker_id];
       if (worker) {
-        worker.status = "idle";
-        delete worker.current_task_id;
-        worker.updated_at = timestamp;
-        worker.last_active_at = timestamp;
-        const session = worker.session_id ? state.sessions[worker.session_id] : undefined;
-        if (session) {
-          session.status = "idle";
-          session.last_active_at = timestamp;
-        }
+        setWorkerTaskState({ state, worker, status: "idle", timestamp });
       }
       appendEvent(state, {
         type: "task_stopped",
@@ -314,15 +303,7 @@ export class TaskManager {
       await this.store.updateState((latest) => {
         const latestWorker = latest.workers[input.worker_id];
         if (latestWorker) {
-          latestWorker.status = "stopped";
-          latestWorker.updated_at = nowIso();
-          latestWorker.last_active_at = latestWorker.updated_at;
-          const session = latestWorker.session_id ? latest.sessions[latestWorker.session_id] : undefined;
-          if (session) {
-            session.status = "stopped";
-            session.last_active_at = latestWorker.updated_at;
-          }
-          delete latestWorker.current_task_id;
+          setWorkerTaskState({ state: latest, worker: latestWorker, status: "stopped", timestamp: nowIso() });
         }
       });
       return {
@@ -338,15 +319,7 @@ export class TaskManager {
       if (!latestWorker) {
         throw new Error(`Worker not found: ${input.worker_id}`);
       }
-      latestWorker.status = "stopped";
-      latestWorker.updated_at = nowIso();
-      latestWorker.last_active_at = latestWorker.updated_at;
-      const session = latestWorker.session_id ? latest.sessions[latestWorker.session_id] : undefined;
-      if (session) {
-        session.status = "stopped";
-        session.last_active_at = latestWorker.updated_at;
-      }
-      delete latestWorker.current_task_id;
+      setWorkerTaskState({ state: latest, worker: latestWorker, status: "stopped", timestamp: nowIso() });
     });
 
     return {
@@ -370,22 +343,6 @@ export class TaskManager {
     ]);
     return { stdout, stderr };
   }
-}
-
-function reportTypeForRole(role: TaskRecord["role"]): TaskRecord["report_type"] {
-  if (role === "implementer") {
-    return "implementation";
-  }
-  if (role === "tester") {
-    return "test";
-  }
-  if (role === "reviewer") {
-    return "review";
-  }
-  if (role === "scout") {
-    return "scout";
-  }
-  return "task";
 }
 
 function defaultWorktreeMode(role: TaskRecord["role"]): TaskRecord["worktree_mode"] {

@@ -16,15 +16,7 @@ export class ClaudeCliAdapter implements ClaudeCodeAdapter {
   constructor(private readonly store: StateStore) {}
 
   async startTask(input: StartTaskInput): Promise<StartTaskResult> {
-    const paths = this.store.taskPaths(input.task.id);
-    const running = startClaudeCli({
-      projectPath: input.execution_path,
-      task: input.prompt,
-      timeoutSec: input.task.timeout_sec,
-      logPath: paths.logPath,
-      stdoutPath: paths.stdoutPath,
-      stderrPath: paths.stderrPath,
-    });
+    const running = startClaudeCliTask(this.store, input);
     this.running.set(input.task.id, running);
     running.finished.finally(() => this.running.delete(input.task.id)).catch(() => undefined);
     return {
@@ -71,4 +63,16 @@ export class ClaudeCliAdapter implements ClaudeCodeAdapter {
       this.running.delete(taskId);
     }
   }
+}
+
+export function startClaudeCliTask(store: StateStore, input: StartTaskInput): RunningClaudeCli {
+  const paths = store.taskPaths(input.task.id);
+  return startClaudeCli({
+    projectPath: input.execution_path,
+    task: input.prompt,
+    timeoutSec: input.task.timeout_sec,
+    logPath: paths.logPath,
+    stdoutPath: paths.stdoutPath,
+    stderrPath: paths.stderrPath,
+  });
 }

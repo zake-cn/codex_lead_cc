@@ -20,7 +20,9 @@ Claude Code performs tactical work inside a project directory or managed worktre
 ## Components
 
 - `mcp/server.ts`: MCP stdio tool surface.
-- `tools/*`: stable tool wrappers for Codex.
+- `services/codex_lead_service.ts`: unified service facade used by compatibility tools.
+- `tools/*`: stable compatibility wrappers that keep the public `cc_*` names.
+- `tools/tool_catalog.ts`: local CLI command catalog for flags and handlers.
 - `orchestrator/plan_manager.ts`: versioned supervisor plans.
 - `orchestrator/dag_scheduler.ts`: dependency readiness transitions.
 - `orchestrator/task_manager.ts`: task records, assignment, reports, stopping.
@@ -34,7 +36,7 @@ Claude Code performs tactical work inside a project directory or managed worktre
 - `orchestrator/metrics_collector.ts`: runtime/report/log metrics.
 - `orchestrator/state_store.ts`: JSON state with a lightweight lock.
 - `orchestrator/task_worker_entry.ts`: detached background runner.
-- `claude/*adapter.ts`: CLI adapter and SDK fallback abstraction.
+- `claude/*adapter.ts`: CLI adapter, runtime adapter facade, and SDK fallback abstraction.
 - `dashboard/status_tui.ts`: local status dashboard.
 
 ## Runtime Flow

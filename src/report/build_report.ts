@@ -7,6 +7,7 @@ import type {
   TaskRecord,
   TaskReport,
 } from "../types.js";
+import { reportTypeForRole } from "./report_schema.js";
 
 export function buildReport(args: {
   task: string;
@@ -138,22 +139,6 @@ function durationFromIso(startedAt: string | null, finishedAt: string | null): n
     return null;
   }
   return new Date(finishedAt).getTime() - new Date(startedAt).getTime();
-}
-
-function reportTypeForRole(role: TaskRecord["role"]): TaskReport["report_type"] {
-  if (role === "implementer") {
-    return "implementation";
-  }
-  if (role === "tester") {
-    return "test";
-  }
-  if (role === "reviewer") {
-    return "review";
-  }
-  if (role === "scout") {
-    return "scout";
-  }
-  return "task";
 }
 
 function roleSpecificFields(

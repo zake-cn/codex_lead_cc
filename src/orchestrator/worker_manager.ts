@@ -10,10 +10,13 @@ import type {
   WorkerRole,
   WorkerStatus,
 } from "../types.js";
+import { WORKER_ROLES, WORKER_RUNTIMES } from "../types.js";
 import { loadConfig } from "../config/load_config.js";
 import { appendEvent, nextId, nowIso, StateStore } from "./state_store.js";
+import { setWorkerTaskState } from "./worker_state.js";
 
-const VALID_ROLES = new Set<WorkerRole>(["scout", "implementer", "tester", "reviewer"]);
+const VALID_ROLES = new Set<WorkerRole>(WORKER_ROLES);
+const VALID_RUNTIMES = new Set<WorkerRuntime>(WORKER_RUNTIMES);
 
 export class WorkerManager {
   constructor(private readonly store: StateStore) {}
@@ -106,19 +109,13 @@ export class WorkerManager {
       if (!worker) {
         throw new Error(`Worker not found: ${args.workerId}`);
       }
-      worker.status = args.status;
-      worker.updated_at = timestamp;
-      worker.last_active_at = timestamp;
-      if (args.currentTaskId) {
-        worker.current_task_id = args.currentTaskId;
-      } else {
-        delete worker.current_task_id;
-      }
-      const session = worker.session_id ? state.sessions[worker.session_id] : undefined;
-      if (session) {
-        session.status = args.status === "running" || args.status === "pending" || args.status === "busy" ? "busy" : args.status === "stopped" ? "stopped" : args.status === "crashed" ? "crashed" : "idle";
-        session.last_active_at = timestamp;
-      }
+      setWorkerTaskState({
+        state,
+        worker,
+        status: args.status,
+        timestamp,
+        currentTaskId: args.currentTaskId,
+      });
       return worker;
     });
   }
@@ -174,10 +171,10 @@ export function normalizeRole(role: string): WorkerRole {
 }
 
 export function normalizeRuntime(runtime: string): WorkerRuntime {
-  if (runtime !== "claude_cli" && runtime !== "claude_sdk") {
+  if (!VALID_RUNTIMES.has(runtime as WorkerRuntime)) {
     throw new Error("runtime must be one of: claude_cli, claude_sdk.");
   }
-  return runtime;
+  return runtime as WorkerRuntime;
 }
 
 function defaultWorktreeMode(role: WorkerRole): WorkerRecord["worktree_mode"] {

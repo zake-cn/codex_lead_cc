@@ -1,7 +1,6 @@
-import { createRuntime } from "../orchestrator/runtime.js";
+import { createCodexLeadService } from "../services/codex_lead_service.js";
 import type { RestartWorkerInput } from "../types.js";
 
 export async function ccRestartWorker(input: RestartWorkerInput) {
-  const runtime = createRuntime();
-  return runtime.sessions.restartWorker(input);
+  return createCodexLeadService().restartWorker(input);
 }

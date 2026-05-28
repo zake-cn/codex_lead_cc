@@ -5,6 +5,7 @@ import { ProcessManager } from "./process_manager.js";
 import { DagScheduler } from "./dag_scheduler.js";
 import { PermissionEngine } from "./permission_engine.js";
 import { syncLinkedPlanTask } from "./plan_state.js";
+import { setWorkerTaskState } from "./worker_state.js";
 
 export class Scheduler {
   constructor(
@@ -59,15 +60,7 @@ export class Scheduler {
         task.runner_pid = runnerPid;
         task.updated_at = timestamp;
         syncLinkedPlanTask(state, task);
-        worker.status = "running";
-        worker.current_task_id = task.id;
-        worker.updated_at = timestamp;
-        worker.last_active_at = timestamp;
-        const session = worker.session_id ? state.sessions[worker.session_id] : undefined;
-        if (session) {
-          session.status = "busy";
-          session.last_active_at = timestamp;
-        }
+        setWorkerTaskState({ state, worker, status: "running", timestamp, currentTaskId: task.id });
         appendEvent(state, {
           type: "task_started",
           project_id: task.project_id,

@@ -1,9 +1,6 @@
-import { createRuntime } from "../orchestrator/runtime.js";
+import { createCodexLeadService } from "../services/codex_lead_service.js";
 import type { ApprovePermissionInput } from "../types.js";
 
 export async function ccApprovePermission(input: ApprovePermissionInput) {
-  const runtime = createRuntime();
-  const result = await runtime.permissions.approve(input);
-  await runtime.scheduler.schedule();
-  return result;
+  return createCodexLeadService().approvePermission(input);
 }

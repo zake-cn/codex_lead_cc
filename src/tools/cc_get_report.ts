@@ -1,7 +1,6 @@
-import { createRuntime } from "../orchestrator/runtime.js";
+import { createCodexLeadService } from "../services/codex_lead_service.js";
 import type { GetReportInput } from "../types.js";
 
 export async function ccGetReport(input: GetReportInput) {
-  const runtime = createRuntime();
-  return runtime.tasks.getReport(input);
+  return createCodexLeadService().getReport(input);
 }

@@ -26,6 +26,11 @@ import { ccRestartWorker } from "../tools/cc_restart_worker.js";
 import { ccStopTask } from "../tools/cc_stop_task.js";
 import { ccStopWorker } from "../tools/cc_stop_worker.js";
 import { ccUpdatePlan } from "../tools/cc_update_plan.js";
+import { TASK_STATUSES, WORKER_ROLES, WORKER_RUNTIMES, WORKER_STATUSES } from "../types.js";
+import { mcpJsonResult } from "./tool_result.js";
+
+const PLAN_STATUSES = ["active", "completed", "archived"] as const;
+const PLAN_TASK_STATUSES = ["planned", ...TASK_STATUSES] as const;
 
 export async function startMcpServer(): Promise<void> {
   const server = new McpServer({
@@ -41,13 +46,13 @@ export async function startMcpServer(): Promise<void> {
       inputSchema: {
         project_path: z.string().min(1),
         project_id: z.string().min(1).optional(),
-        role: z.enum(["scout", "implementer", "tester", "reviewer"]),
+        role: z.enum(WORKER_ROLES),
         worktree_mode: z.enum(["readonly", "isolated", "direct"]).optional(),
-        runtime: z.enum(["claude_cli", "claude_sdk"]).optional(),
+        runtime: z.enum(WORKER_RUNTIMES).optional(),
         idle_timeout_sec: z.number().int().positive().optional(),
       },
     },
-    async (input) => toolResult(await ccCreateWorker(input)),
+    async (input) => mcpJsonResult(await ccCreateWorker(input)),
   );
 
   server.registerTool(
@@ -66,7 +71,7 @@ export async function startMcpServer(): Promise<void> {
         plan_task_id: z.string().min(1).optional(),
       },
     },
-    async (input) => toolResult(await ccAssignTask(input)),
+    async (input) => mcpJsonResult(await ccAssignTask(input)),
   );
 
   server.registerTool(
@@ -80,7 +85,7 @@ export async function startMcpServer(): Promise<void> {
         all: z.boolean().optional(),
       },
     },
-    async (input) => toolResult(await ccGetStatus(input)),
+    async (input) => mcpJsonResult(await ccGetStatus(input)),
   );
 
   server.registerTool(
@@ -92,7 +97,7 @@ export async function startMcpServer(): Promise<void> {
         task_id: z.string().min(1),
       },
     },
-    async (input) => toolResult(await ccGetReport(input)),
+    async (input) => mcpJsonResult(await ccGetReport(input)),
   );
 
   server.registerTool(
@@ -105,7 +110,7 @@ export async function startMcpServer(): Promise<void> {
         reason: z.string().optional(),
       },
     },
-    async (input) => toolResult(await ccStopTask(input)),
+    async (input) => mcpJsonResult(await ccStopTask(input)),
   );
 
   server.registerTool(
@@ -118,7 +123,7 @@ export async function startMcpServer(): Promise<void> {
         reason: z.string().optional(),
       },
     },
-    async (input) => toolResult(await ccStopWorker(input)),
+    async (input) => mcpJsonResult(await ccStopWorker(input)),
   );
 
   server.registerTool(
@@ -130,7 +135,7 @@ export async function startMcpServer(): Promise<void> {
         worker_id: z.string().min(1),
       },
     },
-    async (input) => toolResult(await ccDeleteWorker(input)),
+    async (input) => mcpJsonResult(await ccDeleteWorker(input)),
   );
 
   server.registerTool(
@@ -143,7 +148,7 @@ export async function startMcpServer(): Promise<void> {
         project_id: z.string().min(1).optional(),
       },
     },
-    async (input) => toolResult(await ccGetUpdates(input)),
+    async (input) => mcpJsonResult(await ccGetUpdates(input)),
   );
 
   server.registerTool(
@@ -155,7 +160,7 @@ export async function startMcpServer(): Promise<void> {
         project_id: z.string().min(1).optional(),
       },
     },
-    async (input) => toolResult(await ccGetPendingPermissions(input)),
+    async (input) => mcpJsonResult(await ccGetPendingPermissions(input)),
   );
 
   server.registerTool(
@@ -168,7 +173,7 @@ export async function startMcpServer(): Promise<void> {
         decision: z.enum(["allow_once", "allow_for_task", "allow_for_project"]),
       },
     },
-    async (input) => toolResult(await ccApprovePermission(input)),
+    async (input) => mcpJsonResult(await ccApprovePermission(input)),
   );
 
   server.registerTool(
@@ -181,7 +186,7 @@ export async function startMcpServer(): Promise<void> {
         reason: z.string().optional(),
       },
     },
-    async (input) => toolResult(await ccRejectPermission(input)),
+    async (input) => mcpJsonResult(await ccRejectPermission(input)),
   );
 
   server.registerTool(
@@ -193,7 +198,7 @@ export async function startMcpServer(): Promise<void> {
         task_id: z.string().min(1),
       },
     },
-    async (input) => toolResult(await ccGetDiffSummary(input)),
+    async (input) => mcpJsonResult(await ccGetDiffSummary(input)),
   );
 
   server.registerTool(
@@ -206,7 +211,7 @@ export async function startMcpServer(): Promise<void> {
         file: z.string().min(1),
       },
     },
-    async (input) => toolResult(await ccGetDiffDetail(input)),
+    async (input) => mcpJsonResult(await ccGetDiffDetail(input)),
   );
 
   server.registerTool(
@@ -216,10 +221,10 @@ export async function startMcpServer(): Promise<void> {
       description: "List workers by optional project or status.",
       inputSchema: {
         project_id: z.string().min(1).optional(),
-        status: z.enum(["idle", "pending", "running", "busy", "stopped", "crashed"]).optional(),
+        status: z.enum(WORKER_STATUSES).optional(),
       },
     },
-    async (input) => toolResult(await ccListWorkers(input)),
+    async (input) => mcpJsonResult(await ccListWorkers(input)),
   );
 
   server.registerTool(
@@ -230,12 +235,12 @@ export async function startMcpServer(): Promise<void> {
       inputSchema: {
         project_id: z.string().min(1).optional(),
         status: z
-          .enum(["pending", "blocked", "ready", "waiting_permission", "running", "completed", "failed", "timeout", "stopped", "skipped"])
+          .enum(TASK_STATUSES)
           .optional(),
         worker_id: z.string().min(1).optional(),
       },
     },
-    async (input) => toolResult(await ccListTasks(input)),
+    async (input) => mcpJsonResult(await ccListTasks(input)),
   );
 
   server.registerTool(
@@ -248,7 +253,7 @@ export async function startMcpServer(): Promise<void> {
         worker_id: z.string().min(1).optional(),
       },
     },
-    async (input) => toolResult(await ccCleanupWorktree(input)),
+    async (input) => mcpJsonResult(await ccCleanupWorktree(input)),
   );
 
   server.registerTool(
@@ -262,7 +267,7 @@ export async function startMcpServer(): Promise<void> {
         tasks: z
           .array(
             z.object({
-              role: z.enum(["scout", "implementer", "tester", "reviewer"]),
+              role: z.enum(WORKER_ROLES),
               goal: z.string().min(1),
               depends_on: z.array(z.string().min(1)).optional(),
               worker_id: z.string().min(1).optional(),
@@ -272,7 +277,7 @@ export async function startMcpServer(): Promise<void> {
           .optional(),
       },
     },
-    async (input) => toolResult(await ccCreatePlan(input)),
+    async (input) => mcpJsonResult(await ccCreatePlan(input)),
   );
 
   server.registerTool(
@@ -285,7 +290,7 @@ export async function startMcpServer(): Promise<void> {
         version: z.number().int().positive().optional(),
       },
     },
-    async (input) => toolResult(await ccGetPlan(input)),
+    async (input) => mcpJsonResult(await ccGetPlan(input)),
   );
 
   server.registerTool(
@@ -297,11 +302,11 @@ export async function startMcpServer(): Promise<void> {
         plan_id: z.string().min(1),
         reason: z.string().min(1),
         goal: z.string().min(1).optional(),
-        status: z.enum(["active", "completed", "archived"]).optional(),
+        status: z.enum(PLAN_STATUSES).optional(),
         add_tasks: z
           .array(
             z.object({
-              role: z.enum(["scout", "implementer", "tester", "reviewer"]),
+              role: z.enum(WORKER_ROLES),
               goal: z.string().min(1),
               depends_on: z.array(z.string().min(1)).optional(),
               worker_id: z.string().min(1).optional(),
@@ -314,7 +319,7 @@ export async function startMcpServer(): Promise<void> {
             z.object({
               plan_task_id: z.string().min(1),
               goal: z.string().min(1).optional(),
-              status: z.enum(["planned", "pending", "blocked", "ready", "waiting_permission", "running", "completed", "failed", "timeout", "stopped", "skipped"]).optional(),
+              status: z.enum(PLAN_TASK_STATUSES).optional(),
               depends_on: z.array(z.string().min(1)).optional(),
               worker_id: z.string().min(1).optional(),
               task_id: z.string().min(1).optional(),
@@ -324,7 +329,7 @@ export async function startMcpServer(): Promise<void> {
         remove_tasks: z.array(z.string().min(1)).optional(),
       },
     },
-    async (input) => toolResult(await ccUpdatePlan(input)),
+    async (input) => mcpJsonResult(await ccUpdatePlan(input)),
   );
 
   server.registerTool(
@@ -334,10 +339,10 @@ export async function startMcpServer(): Promise<void> {
       description: "List plans by optional project or status.",
       inputSchema: {
         project_id: z.string().min(1).optional(),
-        status: z.enum(["active", "completed", "archived"]).optional(),
+        status: z.enum(PLAN_STATUSES).optional(),
       },
     },
-    async (input) => toolResult(await ccListPlans(input)),
+    async (input) => mcpJsonResult(await ccListPlans(input)),
   );
 
   server.registerTool(
@@ -350,7 +355,7 @@ export async function startMcpServer(): Promise<void> {
         plan_id: z.string().min(1).optional(),
       },
     },
-    async (input) => toolResult(await ccGetMetrics(input)),
+    async (input) => mcpJsonResult(await ccGetMetrics(input)),
   );
 
   server.registerTool(
@@ -363,7 +368,7 @@ export async function startMcpServer(): Promise<void> {
         reason: z.string().optional(),
       },
     },
-    async (input) => toolResult(await ccRestartWorker(input)),
+    async (input) => mcpJsonResult(await ccRestartWorker(input)),
   );
 
   server.registerTool(
@@ -376,7 +381,7 @@ export async function startMcpServer(): Promise<void> {
         project_id: z.string().min(1).optional(),
       },
     },
-    async (input) => toolResult(await ccGetWorkerHealth(input)),
+    async (input) => mcpJsonResult(await ccGetWorkerHealth(input)),
   );
 
   server.registerTool(
@@ -390,22 +395,10 @@ export async function startMcpServer(): Promise<void> {
         dry_run: z.boolean().optional(),
       },
     },
-    async (input) => toolResult(await ccCleanupIdleWorkers(input)),
+    async (input) => mcpJsonResult(await ccCleanupIdleWorkers(input)),
   );
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
   console.error("codex_lead_cc MCP server running on stdio.");
-}
-
-function toolResult(result: unknown) {
-  return {
-    content: [
-      {
-        type: "text" as const,
-        text: JSON.stringify(result, null, 2),
-      },
-    ],
-    structuredContent: result as Record<string, unknown>,
-  };
 }

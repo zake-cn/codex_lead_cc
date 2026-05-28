@@ -1,7 +1,6 @@
-import { createRuntime } from "../orchestrator/runtime.js";
+import { createCodexLeadService } from "../services/codex_lead_service.js";
 import type { GetPendingPermissionsInput } from "../types.js";
 
 export async function ccGetPendingPermissions(input: GetPendingPermissionsInput) {
-  const runtime = createRuntime();
-  return runtime.permissions.getPendingPermissions(input);
+  return createCodexLeadService().getPendingPermissions(input);
 }

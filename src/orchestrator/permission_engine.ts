@@ -13,6 +13,7 @@ import type {
 } from "../types.js";
 import { appendEvent, nextId, nowIso, StateStore } from "./state_store.js";
 import { syncLinkedPlanTask } from "./plan_state.js";
+import { setWorkerTaskState } from "./worker_state.js";
 
 export class PermissionEngine {
   constructor(private readonly store: StateStore) {}
@@ -126,15 +127,7 @@ export class PermissionEngine {
         syncLinkedPlanTask(state, task);
         const worker = state.workers[task.worker_id];
         if (worker && worker.current_task_id === task.id) {
-          worker.status = "idle";
-          delete worker.current_task_id;
-          worker.updated_at = timestamp;
-          worker.last_active_at = timestamp;
-          const session = worker.session_id ? state.sessions[worker.session_id] : undefined;
-          if (session) {
-            session.status = "idle";
-            session.last_active_at = timestamp;
-          }
+          setWorkerTaskState({ state, worker, status: "idle", timestamp });
         }
       }
 
@@ -197,15 +190,7 @@ export class PermissionEngine {
         syncLinkedPlanTask(state, latestTask);
         const worker = state.workers[latestTask.worker_id];
         if (worker && worker.current_task_id === latestTask.id) {
-          worker.status = "idle";
-          delete worker.current_task_id;
-          worker.updated_at = timestamp;
-          worker.last_active_at = timestamp;
-          const session = worker.session_id ? state.sessions[worker.session_id] : undefined;
-          if (session) {
-            session.status = "idle";
-            session.last_active_at = timestamp;
-          }
+          setWorkerTaskState({ state, worker, status: "idle", timestamp });
         }
         appendEvent(state, {
           type: "task_failed",

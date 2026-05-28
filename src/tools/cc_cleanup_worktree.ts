@@ -1,7 +1,6 @@
-import { createRuntime } from "../orchestrator/runtime.js";
+import { createCodexLeadService } from "../services/codex_lead_service.js";
 import type { CleanupWorktreeInput } from "../types.js";
 
 export async function ccCleanupWorktree(input: CleanupWorktreeInput) {
-  const runtime = createRuntime();
-  return runtime.worktrees.cleanup(input);
+  return createCodexLeadService().cleanupWorktree(input);
 }

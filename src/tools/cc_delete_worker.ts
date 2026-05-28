@@ -1,7 +1,6 @@
-import { createRuntime } from "../orchestrator/runtime.js";
+import { createCodexLeadService } from "../services/codex_lead_service.js";
 import type { DeleteWorkerInput } from "../types.js";
 
 export async function ccDeleteWorker(input: DeleteWorkerInput) {
-  const runtime = createRuntime();
-  return runtime.workers.deleteWorker(input);
+  return createCodexLeadService().deleteWorker(input);
 }

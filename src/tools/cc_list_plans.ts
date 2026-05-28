@@ -1,7 +1,6 @@
-import { createRuntime } from "../orchestrator/runtime.js";
+import { createCodexLeadService } from "../services/codex_lead_service.js";
 import type { ListPlansInput } from "../types.js";
 
 export async function ccListPlans(input: ListPlansInput) {
-  const runtime = createRuntime();
-  return runtime.plans.listPlans(input);
+  return createCodexLeadService().listPlans(input);
 }

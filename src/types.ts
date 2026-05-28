@@ -1,24 +1,31 @@
-export type WorkerRole = "scout" | "implementer" | "tester" | "reviewer";
+export const WORKER_ROLES = ["scout", "implementer", "tester", "reviewer"] as const;
+export type WorkerRole = (typeof WORKER_ROLES)[number];
 
-export type WorkerRuntime = "claude_cli" | "claude_sdk";
+export const WORKER_RUNTIMES = ["claude_cli", "claude_sdk"] as const;
+export type WorkerRuntime = (typeof WORKER_RUNTIMES)[number];
 
-export type WorkerStatus = "idle" | "pending" | "running" | "busy" | "stopped" | "crashed";
+export const WORKER_STATUSES = ["idle", "pending", "running", "busy", "stopped", "crashed"] as const;
+export type WorkerStatus = (typeof WORKER_STATUSES)[number];
 
-export type WorkerHealthStatus = "healthy" | "idle" | "busy" | "idle_timeout" | "stopped" | "crashed";
+export const WORKER_HEALTH_STATUSES = ["healthy", "idle", "busy", "idle_timeout", "stopped", "crashed"] as const;
+export type WorkerHealthStatus = (typeof WORKER_HEALTH_STATUSES)[number];
 
-export type TaskStatus =
-  | "pending"
-  | "blocked"
-  | "ready"
-  | "waiting_permission"
-  | "running"
-  | "completed"
-  | "failed"
-  | "timeout"
-  | "stopped"
-  | "skipped";
+export const TASK_STATUSES = [
+  "pending",
+  "blocked",
+  "ready",
+  "waiting_permission",
+  "running",
+  "completed",
+  "failed",
+  "timeout",
+  "stopped",
+  "skipped",
+] as const;
+export type TaskStatus = (typeof TASK_STATUSES)[number];
 
-export type FinalTaskStatus = "completed" | "failed" | "timeout" | "stopped";
+export const FINAL_TASK_STATUSES = ["completed", "failed", "timeout", "stopped"] as const;
+export type FinalTaskStatus = (typeof FINAL_TASK_STATUSES)[number];
 
 export interface CcRunTaskInput {
   project_path: string;

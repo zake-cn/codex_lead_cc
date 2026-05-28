@@ -1,7 +1,6 @@
-import { createRuntime } from "../orchestrator/runtime.js";
+import { createCodexLeadService } from "../services/codex_lead_service.js";
 import type { CleanupIdleWorkersInput } from "../types.js";
 
 export async function ccCleanupIdleWorkers(input: CleanupIdleWorkersInput) {
-  const runtime = createRuntime();
-  return runtime.sessions.cleanupIdleWorkers(input);
+  return createCodexLeadService().cleanupIdleWorkers(input);
 }

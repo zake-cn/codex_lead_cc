@@ -1,7 +1,6 @@
-import { createRuntime } from "../orchestrator/runtime.js";
+import { createCodexLeadService } from "../services/codex_lead_service.js";
 import type { GetWorkerHealthInput } from "../types.js";
 
 export async function ccGetWorkerHealth(input: GetWorkerHealthInput) {
-  const runtime = createRuntime();
-  return runtime.sessions.getWorkerHealth(input);
+  return createCodexLeadService().getWorkerHealth(input);
 }

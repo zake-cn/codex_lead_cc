@@ -1,7 +1,6 @@
-import { createRuntime } from "../orchestrator/runtime.js";
+import { createCodexLeadService } from "../services/codex_lead_service.js";
 import type { ListTasksInput } from "../types.js";
 
 export async function ccListTasks(input: ListTasksInput) {
-  const runtime = createRuntime();
-  return runtime.tasks.listTasks(input);
+  return createCodexLeadService().listTasks(input);
 }

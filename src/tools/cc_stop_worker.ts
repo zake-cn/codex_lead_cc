@@ -1,7 +1,6 @@
-import { createRuntime } from "../orchestrator/runtime.js";
+import { createCodexLeadService } from "../services/codex_lead_service.js";
 import type { StopWorkerInput } from "../types.js";
 
 export async function ccStopWorker(input: StopWorkerInput) {
-  const runtime = createRuntime();
-  return runtime.tasks.stopWorker(input);
+  return createCodexLeadService().stopWorker(input);
 }
