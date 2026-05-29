@@ -37,6 +37,11 @@ import type {
   WaitForEventsInput,
 } from "../types.js";
 import { createRuntime, type OrchestratorRuntime } from "../orchestrator/runtime.js";
+import { AdminService } from "./admin_service.js";
+import { DecisionService } from "./decision_service.js";
+import { DispatchService } from "./dispatch_service.js";
+import { InspectService } from "./inspect_service.js";
+import { WaitService } from "./wait_service.js";
 
 const DEFAULT_TIMEOUT_SEC = 300;
 const MAX_TIMEOUT_SEC = 3_600;
@@ -178,6 +183,26 @@ export class CodexLeadService {
 
   async cleanupIdleWorkers(input: CleanupIdleWorkersInput) {
     return this.runtime.sessions.cleanupIdleWorkers(input);
+  }
+
+  async dispatch(input: Record<string, unknown>) {
+    return new DispatchService(this).dispatch(input);
+  }
+
+  async wait(input: Record<string, unknown>) {
+    return new WaitService(this).wait(input);
+  }
+
+  async inspect(input: Record<string, unknown>) {
+    return new InspectService(this).inspect(input);
+  }
+
+  async decide(input: Record<string, unknown>) {
+    return new DecisionService(this).decide(input);
+  }
+
+  async admin(input: Record<string, unknown>) {
+    return new AdminService(this).admin(input);
   }
 }
 

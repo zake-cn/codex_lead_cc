@@ -2,6 +2,21 @@
 
 The MCP surface is intentionally managerial. It does not expose direct file reads, shell commands, or edit operations to Codex.
 
+## Compact Gateway Tools
+
+Default Supervisor Mode exposes only:
+
+- `cc_dispatch`
+- `cc_wait`
+- `cc_inspect`
+- `cc_decide`
+
+These tools route to the internal service layer and return a consistent gateway envelope. They do not expose direct file reads, shell commands, or edit operations.
+
+## Full Dev Tools
+
+Full exposure keeps the existing detailed tools for compatibility and local debugging.
+
 ## Task And Worker Tools
 
 - `cc_run_task`
@@ -48,6 +63,12 @@ The MCP surface is intentionally managerial. It does not expose direct file read
 - `cc_mark_notifications_read`
 
 `cc_wait_for_events` returns a lightweight wake packet. It does not return full reports, raw logs, source files, or full diffs. After a wake packet, Codex should call `cc_get_report` with `level: "summary"` first, then escalate to `full` or `raw` only when needed.
+
+## Admin Tool
+
+- `cc_admin`
+
+`cc_admin` is exposed only in full/dev mode.
 
 ## Design Rule
 

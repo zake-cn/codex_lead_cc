@@ -1,11 +1,12 @@
 {
   "name": "codex_lead_cc",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Local Codex supervisor and Claude Code worker orchestration runtime.",
   "license": "MIT",
   "type": "module",
   "bin": {
-    "codex-lead-cc": "dist/index.js"
+    "codex-lead-cc": "dist/index.js",
+    "codex_lead_cc": "dist/cli/codex_lead_cc.js"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -16,7 +17,9 @@
     "demo:test": "python3 -m unittest discover -s examples/demo-project/tests",
     "demo:worker": "node dist/index.js cc_create_worker --project-path examples/demo-project --role scout",
     "benchmark": "tsx benchmarks/run_benchmark.ts",
-    "smoke:wait-mode": "tsx tests/smoke_wait_mode.ts"
+    "smoke:wait-mode": "tsx tests/smoke_wait_mode.ts",
+    "smoke:gateway": "tsx tests/smoke_gateway.ts",
+    "smoke:wrapper": "tsx tests/smoke_wrapper.ts"
   },
   "keywords": [
     "codex",

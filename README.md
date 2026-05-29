@@ -57,11 +57,20 @@ Phase 4 adds Supervisor Wait Mode:
 - `cc_wait_for_events` long-polling so Codex can sleep until a wake-worthy worker event appears.
 - Summary/full/raw report levels, keeping wake packets lightweight by default.
 
+Phase 5 adds mode isolation and a compact MCP gateway:
+
+- `codex` remains ordinary Codex and is not modified by this project.
+- `codex_lead_cc` starts Codex in Supervisor Mode with transient config overrides.
+- Supervisor Mode defaults to compact MCP exposure: `cc_dispatch`, `cc_wait`, `cc_inspect`, and `cc_decide`.
+- Full fine-grained `cc_*` tools remain available for CLI use and dev-mode MCP exposure.
+- The wrapper does not edit the default Codex config, so ordinary `codex mcp list` is not polluted.
+
 ## Install
 
 ```bash
 npm install
 npm run build
+npm link
 ```
 
 Requirements:
@@ -70,55 +79,85 @@ Requirements:
 - npm.
 - Claude Code CLI available as `claude` on `PATH`.
 - Claude Code logged in before assigning real tasks.
+- Codex CLI available as `codex` on `PATH` for the `codex_lead_cc` wrapper.
+
+## Normal Codex Vs Supervisor Mode
+
+Ordinary Codex:
+
+```bash
+codex
+```
+
+This remains the user's normal Codex session. It does not load `codex_lead_cc`, and this project does not write to the default Codex config.
+
+Supervisor Mode:
+
+```bash
+codex_lead_cc
+```
+
+This starts the real `codex` binary with temporary `-c` config overrides that attach the local `codex_lead_cc` MCP server in compact mode. The default global Codex MCP list is not changed.
+
+Useful wrapper commands:
+
+```bash
+codex_lead_cc --doctor
+codex_lead_cc --dry-run
+codex_lead_cc --print-config
+codex_lead_cc --mode supervisor --mcp-exposure compact
+codex_lead_cc --mode dev --mcp-exposure full
+```
 
 ## Start MCP
 
 ```bash
-node dist/index.js mcp
+node dist/index.js mcp --exposure compact
+node dist/index.js mcp --exposure full
 ```
 
-Example MCP client config:
+Compact exposure registers only gateway tools. Full exposure registers gateway tools plus all fine-grained legacy/dev tools.
+
+Example manual MCP client config:
 
 ```json
 {
   "mcpServers": {
     "codex_lead_cc": {
       "command": "node",
-      "args": ["/home/hs/code/codex_lead_cc/dist/index.js", "mcp"],
+      "args": ["/home/hs/code/codex_lead_cc/dist/index.js", "mcp", "--exposure", "compact"],
       "cwd": "/home/hs/code/codex_lead_cc"
     }
   }
 }
 ```
 
-## Quickstart
+## Gateway Quickstart
 
-Create a plan:
+Create a plan through the compact gateway:
 
 ```bash
-node dist/index.js cc_create_plan \
+node dist/index.js cc_dispatch \
+  --action create_plan \
   --project-id demo-project \
   --goal "Fix the demo project bug and add regression tests"
 ```
 
-Create a scout worker:
+Create a scout task through the compact gateway:
 
 ```bash
-node dist/index.js cc_create_worker \
+node dist/index.js cc_dispatch \
+  --action create_scout_task \
   --project-path examples/demo-project \
   --project-id demo-project \
-  --role scout
-```
-
-Assign a task:
-
-```bash
-node dist/index.js cc_assign_task \
-  --worker-id ccw_001 \
-  --plan-id plan_001 \
-  --plan-task-id plan_001_step_001 \
   --task "Read this project and summarize structure and entry points." \
   --timeout-sec 300
+```
+
+Inspect status through the compact gateway:
+
+```bash
+node dist/index.js cc_inspect --action get_status --project-id demo-project
 ```
 
 Watch status:
@@ -127,7 +166,7 @@ Watch status:
 node dist/index.js status --project-id demo-project --watch
 ```
 
-Poll events:
+Poll events with the legacy/dev tool:
 
 ```bash
 node dist/index.js cc_get_updates --since-event-id 0 --project-id demo-project
@@ -157,7 +196,25 @@ node dist/index.js cc_wait_for_events \
 
 ## MCP Tools
 
-Core task tools:
+Supervisor compact gateway tools:
+
+- `cc_dispatch`: create/update plans, create workers, assign tasks, restart workers, dispatch ready work.
+- `cc_wait`: enter Supervisor Wait Mode and return lightweight wake packets.
+- `cc_inspect`: read status, plans, inbox, report summaries, diff summaries, permissions, metrics, and health.
+- `cc_decide`: approve/reject permissions, stop/restart workers or tasks, mark notifications read, set supervisor state.
+
+All gateway tools return a consistent envelope:
+
+```json
+{
+  "ok": true,
+  "action": "get_status",
+  "data": {},
+  "warnings": []
+}
+```
+
+Dev-mode and advanced CLI tools are still available in full exposure:
 
 - `cc_run_task`
 - `cc_create_worker`
@@ -265,6 +322,8 @@ Run the wait-mode smoke test:
 
 ```bash
 npm run smoke:wait-mode
+npm run smoke:gateway
+npm run smoke:wrapper
 ```
 
 The benchmark directory contains reproducible task definitions and a sample result for the scout -> implementer -> tester -> reviewer flow.
@@ -285,6 +344,38 @@ Runtime files are under `.agentforeman/` by default:
 ```
 
 Set `AGENTFOREMAN_HOME` to use a different runtime directory.
+
+## Disable Or Inspect
+
+Because `codex_lead_cc` uses transient Codex config overrides, disabling it is simply a matter of using ordinary Codex:
+
+```bash
+codex
+```
+
+To inspect what Supervisor Mode would inject:
+
+```bash
+codex_lead_cc --dry-run
+codex_lead_cc --print-config
+```
+
+To run Codex through the wrapper without attaching the MCP server:
+
+```bash
+codex_lead_cc --mode off
+```
+
+## Troubleshooting
+
+```bash
+codex_lead_cc --doctor
+codex mcp list
+node dist/index.js mcp --exposure compact
+node dist/index.js mcp --exposure full
+```
+
+`codex mcp list` should not show `codex_lead_cc` unless you manually registered it yourself. The wrapper does not persist MCP config.
 
 Optional config file:
 

@@ -1,10 +1,13 @@
 import { ccApprovePermission } from "./cc_approve_permission.js";
 import { ccAssignTask } from "./cc_assign_task.js";
+import { ccAdmin } from "./cc_admin.js";
 import { ccCleanupIdleWorkers } from "./cc_cleanup_idle_workers.js";
 import { ccCleanupWorktree } from "./cc_cleanup_worktree.js";
 import { ccCreatePlan } from "./cc_create_plan.js";
 import { ccCreateWorker } from "./cc_create_worker.js";
+import { ccDecide } from "./cc_decide.js";
 import { ccDeleteWorker } from "./cc_delete_worker.js";
+import { ccDispatch } from "./cc_dispatch.js";
 import { ccGetDiffDetail } from "./cc_get_diff_detail.js";
 import { ccGetDiffSummary } from "./cc_get_diff_summary.js";
 import { ccGetMetrics } from "./cc_get_metrics.js";
@@ -16,6 +19,7 @@ import { ccGetSupervisorState } from "./cc_get_supervisor_state.js";
 import { ccGetInbox } from "./cc_get_inbox.js";
 import { ccGetUpdates } from "./cc_get_updates.js";
 import { ccGetWorkerHealth } from "./cc_get_worker_health.js";
+import { ccInspect } from "./cc_inspect.js";
 import { ccListPlans } from "./cc_list_plans.js";
 import { ccListTasks } from "./cc_list_tasks.js";
 import { ccListWorkers } from "./cc_list_workers.js";
@@ -27,6 +31,7 @@ import { ccSetSupervisorState } from "./cc_set_supervisor_state.js";
 import { ccStopTask } from "./cc_stop_task.js";
 import { ccStopWorker } from "./cc_stop_worker.js";
 import { ccUpdatePlan } from "./cc_update_plan.js";
+import { ccWait } from "./cc_wait.js";
 import { ccWaitForEvents } from "./cc_wait_for_events.js";
 
 export interface ToolCatalogEntry {
@@ -35,6 +40,76 @@ export interface ToolCatalogEntry {
 }
 
 export const TOOL_CATALOG: Record<string, ToolCatalogEntry> = {
+  cc_dispatch: {
+    flags: {
+      "--action": "action",
+      "--project-id": "project_id",
+      "--project-path": "project_path",
+      "--plan-id": "plan_id",
+      "--plan-task-id": "plan_task_id",
+      "--goal": "goal",
+      "--task": "task",
+      "--worker-id": "worker_id",
+      "--worker-role": "worker_role",
+      "--role": "role",
+      "--timeout-sec": "timeout_sec",
+      "--depends-on": "depends_on",
+      "--target-task-id": "target_task_id",
+    },
+    handler: (input) => ccDispatch(input),
+  },
+  cc_wait: {
+    flags: {
+      "--project-id": "project_id",
+      "--plan-id": "plan_id",
+      "--since-event-id": "since_event_id",
+      "--wake-on": "wake_on",
+      "--timeout-sec": "timeout_sec",
+      "--max-events": "max_events",
+      "--state": "state",
+      "--reason": "reason",
+    },
+    handler: (input) => ccWait(input),
+  },
+  cc_inspect: {
+    flags: {
+      "--action": "action",
+      "--project-id": "project_id",
+      "--plan-id": "plan_id",
+      "--task-id": "task_id",
+      "--worker-id": "worker_id",
+      "--report-id": "report_id",
+      "--level": "level",
+      "--file": "file",
+      "--only-unread": "only_unread",
+      "--min-priority": "min_priority",
+      "--since-event-id": "since_event_id",
+      "--status": "status",
+      "--all": "all",
+    },
+    handler: (input) => ccInspect(input),
+  },
+  cc_decide: {
+    flags: {
+      "--action": "action",
+      "--project-id": "project_id",
+      "--plan-id": "plan_id",
+      "--task-id": "task_id",
+      "--worker-id": "worker_id",
+      "--request-id": "request_id",
+      "--decision": "decision",
+      "--reason": "reason",
+      "--state": "state",
+      "--notification-ids": "notification_ids",
+    },
+    handler: (input) => ccDecide(input),
+  },
+  cc_admin: {
+    flags: {
+      "--action": "action",
+    },
+    handler: (input) => ccAdmin(input),
+  },
   cc_run_task: {
     flags: {
       "--project-path": "project_path",

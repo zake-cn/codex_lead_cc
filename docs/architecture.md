@@ -20,7 +20,13 @@ Claude Code performs tactical work inside a project directory or managed worktre
 ## Components
 
 - `mcp/server.ts`: MCP stdio tool surface.
+- `mcp/exposure.ts`: compact/full exposure policy.
 - `services/codex_lead_service.ts`: unified service facade used by compatibility tools.
+- `services/dispatch_service.ts`: compact gateway dispatch actions.
+- `services/wait_service.ts`: compact gateway wait actions.
+- `services/inspect_service.ts`: compact gateway inspect actions.
+- `services/decision_service.ts`: compact gateway decision actions.
+- `services/admin_service.ts`: dev-mode admin gateway actions.
 - `tools/*`: stable compatibility wrappers that keep the public `cc_*` names.
 - `tools/tool_catalog.ts`: local CLI command catalog for flags and handlers.
 - `orchestrator/plan_manager.ts`: versioned supervisor plans.

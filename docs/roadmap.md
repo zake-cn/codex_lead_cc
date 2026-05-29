@@ -58,6 +58,18 @@ Completed in this milestone.
 - Status dashboard display for supervisor state and unread inbox
 - Wait-mode smoke test
 
+## Phase 5: Mode Isolation And Compact Gateway
+
+Completed in this milestone.
+
+- `codex_lead_cc` command wrapper
+- Ordinary `codex` isolation with no persistent MCP config writes
+- Compact MCP exposure with `cc_dispatch`, `cc_wait`, `cc_inspect`, and `cc_decide`
+- Full/dev exposure preserving all Phase 0-4 fine-grained tools
+- Gateway service layer and unified response envelope
+- Supervisor Mode instruction skill
+- Gateway and wrapper smoke tests
+
 ## Later Candidates
 
 - Real Claude Code SDK runtime implementation

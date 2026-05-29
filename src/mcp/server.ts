@@ -4,6 +4,9 @@ import * as z from "zod/v4";
 
 import { ccApprovePermission } from "../tools/cc_approve_permission.js";
 import { ccAssignTask } from "../tools/cc_assign_task.js";
+import { ccAdmin } from "../tools/cc_admin.js";
+import { ccDecide } from "../tools/cc_decide.js";
+import { ccDispatch } from "../tools/cc_dispatch.js";
 import { ccCleanupIdleWorkers } from "../tools/cc_cleanup_idle_workers.js";
 import { ccCleanupWorktree } from "../tools/cc_cleanup_worktree.js";
 import { ccCreatePlan } from "../tools/cc_create_plan.js";
@@ -20,6 +23,7 @@ import { ccGetSupervisorState } from "../tools/cc_get_supervisor_state.js";
 import { ccGetInbox } from "../tools/cc_get_inbox.js";
 import { ccGetUpdates } from "../tools/cc_get_updates.js";
 import { ccGetWorkerHealth } from "../tools/cc_get_worker_health.js";
+import { ccInspect } from "../tools/cc_inspect.js";
 import { ccListPlans } from "../tools/cc_list_plans.js";
 import { ccListTasks } from "../tools/cc_list_tasks.js";
 import { ccListWorkers } from "../tools/cc_list_workers.js";
@@ -30,6 +34,7 @@ import { ccSetSupervisorState } from "../tools/cc_set_supervisor_state.js";
 import { ccStopTask } from "../tools/cc_stop_task.js";
 import { ccStopWorker } from "../tools/cc_stop_worker.js";
 import { ccUpdatePlan } from "../tools/cc_update_plan.js";
+import { ccWait } from "../tools/cc_wait.js";
 import { ccWaitForEvents } from "../tools/cc_wait_for_events.js";
 import {
   REPORT_LEVELS,
@@ -40,6 +45,7 @@ import {
   WORKER_RUNTIMES,
   WORKER_STATUSES,
 } from "../types.js";
+import { normalizeMcpExposure, type McpExposure } from "./exposure.js";
 import { mcpJsonResult } from "./tool_result.js";
 
 const PLAN_STATUSES = ["active", "completed", "archived"] as const;
@@ -59,12 +65,20 @@ const WAKE_TYPES = [
   "plan_completed",
 ] as const;
 
-export async function startMcpServer(): Promise<void> {
+export interface McpServerOptions {
+  exposure?: McpExposure;
+}
+
+export async function startMcpServer(options: McpServerOptions = {}): Promise<void> {
+  const exposure = options.exposure ?? normalizeMcpExposure(process.env.MCP_EXPOSURE);
   const server = new McpServer({
     name: "codex_lead_cc",
-    version: "0.4.0",
+    version: "0.5.0",
   });
 
+  registerGatewayTools(server);
+
+  if (exposure === "full") {
   server.registerTool(
     "cc_create_worker",
     {
@@ -499,8 +513,117 @@ export async function startMcpServer(): Promise<void> {
     },
     async (input) => mcpJsonResult(await ccCleanupIdleWorkers(input)),
   );
+  server.registerTool(
+    "cc_admin",
+    {
+      title: "Admin Gateway",
+      description: "Development-only gateway for tool listing and runtime summaries.",
+      inputSchema: {
+        action: z.string().min(1).optional(),
+      },
+    },
+    async (input) => mcpJsonResult(await ccAdmin(input as Record<string, unknown>)),
+  );
+  }
 
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("codex_lead_cc MCP server running on stdio.");
+  console.error(`codex_lead_cc MCP server running on stdio (${exposure} exposure).`);
+}
+
+function registerGatewayTools(server: McpServer): void {
+  server.registerTool(
+    "cc_dispatch",
+    {
+      title: "Dispatch Supervisor Work",
+      description: "Gateway for plan creation, worker creation, and task dispatch.",
+      inputSchema: {
+        action: z.string().min(1),
+        project_id: z.string().min(1).optional(),
+        project_path: z.string().min(1).optional(),
+        plan_id: z.string().min(1).optional(),
+        plan_task_id: z.string().min(1).optional(),
+        goal: z.string().min(1).optional(),
+        task: z.union([
+          z.string().min(1),
+          z.object({ goal: z.string().min(1) }),
+        ]).optional(),
+        worker_id: z.string().min(1).optional(),
+        worker_role: z.enum(WORKER_ROLES).optional(),
+        role: z.enum(WORKER_ROLES).optional(),
+        timeout_sec: z.number().int().positive().optional(),
+        depends_on: z.array(z.string().min(1)).optional(),
+        target_task_id: z.string().min(1).optional(),
+        tasks: z.array(z.record(z.string(), z.unknown())).optional(),
+        add_tasks: z.array(z.record(z.string(), z.unknown())).optional(),
+        update_tasks: z.array(z.record(z.string(), z.unknown())).optional(),
+        remove_tasks: z.array(z.string().min(1)).optional(),
+      },
+    },
+    async (input) => mcpJsonResult(await ccDispatch(input as Record<string, unknown>)),
+  );
+
+  server.registerTool(
+    "cc_wait",
+    {
+      title: "Wait For Supervisor Events",
+      description: "Long-poll for wake-worthy worker events and return a lightweight wake packet.",
+      inputSchema: {
+        project_id: z.string().min(1).optional(),
+        plan_id: z.string().min(1).optional(),
+        since_event_id: z.number().int().nonnegative().optional(),
+        wake_on: z.array(z.enum(WAKE_TYPES)).optional(),
+        timeout_sec: z.number().int().positive().optional(),
+        max_events: z.number().int().positive().optional(),
+        state: z.enum(["waiting", "sleeping", "active"]).optional(),
+        reason: z.string().optional(),
+      },
+    },
+    async (input) => mcpJsonResult(await ccWait(input as Record<string, unknown>)),
+  );
+
+  server.registerTool(
+    "cc_inspect",
+    {
+      title: "Inspect Supervisor Artifacts",
+      description: "Gateway for status, inbox, reports, diffs, metrics, plans, and permissions.",
+      inputSchema: {
+        action: z.string().min(1),
+        project_id: z.string().min(1).optional(),
+        plan_id: z.string().min(1).optional(),
+        task_id: z.string().min(1).optional(),
+        worker_id: z.string().min(1).optional(),
+        report_id: z.string().min(1).optional(),
+        level: z.enum(REPORT_LEVELS).optional(),
+        file: z.string().min(1).optional(),
+        only_unread: z.boolean().optional(),
+        min_priority: z.enum(WAKE_PRIORITIES).optional(),
+        since_event_id: z.number().int().nonnegative().optional(),
+        status: z.string().optional(),
+        all: z.boolean().optional(),
+      },
+    },
+    async (input) => mcpJsonResult(await ccInspect(input as Record<string, unknown>)),
+  );
+
+  server.registerTool(
+    "cc_decide",
+    {
+      title: "Make Supervisor Decision",
+      description: "Gateway for approvals, stops, restarts, notifications, and supervisor state changes.",
+      inputSchema: {
+        action: z.string().min(1),
+        project_id: z.string().min(1).optional(),
+        plan_id: z.string().min(1).optional(),
+        task_id: z.string().min(1).optional(),
+        worker_id: z.string().min(1).optional(),
+        request_id: z.string().min(1).optional(),
+        decision: z.string().optional(),
+        reason: z.string().optional(),
+        state: z.enum(SUPERVISOR_STATES).optional(),
+        notification_ids: z.array(z.string().min(1)).optional(),
+      },
+    },
+    async (input) => mcpJsonResult(await ccDecide(input as Record<string, unknown>)),
+  );
 }

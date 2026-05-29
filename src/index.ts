@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 
 import { renderStatusDashboard, watchStatusDashboard } from "./dashboard/status_tui.js";
 import { startMcpServer } from "./mcp/server.js";
+import { normalizeMcpExposure } from "./mcp/exposure.js";
 import { TOOL_CATALOG } from "./tools/tool_catalog.js";
 
 async function main(): Promise<void> {
@@ -14,7 +15,7 @@ async function main(): Promise<void> {
   }
 
   if (command === "mcp") {
-    await startMcpServer();
+    await startMcpServer(parseMcpArgs(args));
     return;
   }
 
@@ -25,6 +26,37 @@ async function main(): Promise<void> {
 
   const result = await runCommand(command, args);
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+}
+
+function parseMcpArgs(args: string[]): { exposure?: ReturnType<typeof normalizeMcpExposure> } {
+  let exposure: ReturnType<typeof normalizeMcpExposure> | undefined;
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    const next = args[index + 1];
+
+    if (arg === "--exposure" || arg === "--mcp-exposure") {
+      if (!next) {
+        throw new Error(`${arg} requires compact or full.`);
+      }
+      exposure = normalizeMcpExposure(next);
+      index += 1;
+      continue;
+    }
+
+    if (arg === "--mode") {
+      if (!next) {
+        throw new Error("--mode requires supervisor or dev.");
+      }
+      exposure = next === "dev" ? "full" : "compact";
+      index += 1;
+      continue;
+    }
+
+    throw new Error(`Unknown mcp argument: ${arg}`);
+  }
+
+  return { exposure };
 }
 
 async function runCommand(command: string, args: string[]): Promise<unknown> {
@@ -134,11 +166,16 @@ async function readStdin(): Promise<string> {
 }
 
 function printHelp(): void {
-  process.stdout.write(`codex_lead_cc Phase 4 local CLI
+  process.stdout.write(`codex_lead_cc Phase 5 local CLI
 
 Usage:
   codex-lead-cc mcp
+  codex-lead-cc mcp --exposure <compact|full>
   codex-lead-cc status [--project-id <project>] [--watch]
+  codex-lead-cc cc_dispatch --action <create_plan|assign_task|...>
+  codex-lead-cc cc_wait --project-id <project> [--timeout-sec 30]
+  codex-lead-cc cc_inspect --action <get_status|get_report|...>
+  codex-lead-cc cc_decide --action <approve_permission|stop_task|...>
   codex-lead-cc cc_run_task --project-path <path> --task <task> [--timeout-sec 300]
   codex-lead-cc cc_create_worker --project-path <path> --role <scout|implementer|tester|reviewer>
   codex-lead-cc cc_assign_task --worker-id <ccw_001> --task <task> [--depends-on task_001,task_002]
@@ -165,7 +202,12 @@ All commands except mcp also support:
   --stdin
 
 Commands:
-  mcp                Start the MCP stdio server
+  mcp                Start the MCP stdio server; compact exposes gateway tools only, full exposes all tools
+  cc_dispatch        Gateway for planning, worker creation, and task dispatch
+  cc_wait            Gateway for Supervisor Wait Mode
+  cc_inspect         Gateway for status, reports, diffs, metrics, and inbox reads
+  cc_decide          Gateway for approvals, stops, restarts, and state decisions
+  cc_admin           Dev-mode admin gateway
   cc_run_task        Phase 0 compatible synchronous Claude Code run
   cc_create_worker   Create a lightweight Claude Code worker
   cc_assign_task     Assign a task and return immediately with task_id
