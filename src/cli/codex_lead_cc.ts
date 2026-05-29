@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { normalizeMcpExposure, type McpExposure } from "../mcp/exposure.js";
+import { detectInstallSource, parseUpdateArgs, runUpdate } from "./update.js";
 
 type WrapperMode = "supervisor" | "dev" | "off";
 
@@ -21,10 +22,16 @@ const wrapperDir = path.dirname(fileURLToPath(import.meta.url));
 const distRoot = path.resolve(wrapperDir, "..");
 const repoRoot = path.resolve(distRoot, "..");
 const mcpEntry = path.join(distRoot, "index.js");
-const skillPath = path.join(repoRoot, "codex-plugin", "skills", "codex-lead-cc-supervisor", "SKILL.md");
+const skillPath = path.join(repoRoot, "codex-plugin", "skills", "codex_lead_cc_supervisor", "SKILL.md");
 
 async function main(): Promise<void> {
-  const options = parseArgs(process.argv.slice(2));
+  const rawArgs = process.argv.slice(2);
+  if (rawArgs[0] === "update") {
+    process.exitCode = runUpdate(parseUpdateArgs(rawArgs.slice(1)), repoRoot);
+    return;
+  }
+
+  const options = parseArgs(rawArgs);
   const supervisorInstruction = readSupervisorInstruction();
   const launch = buildCodexLaunch(options, supervisorInstruction);
 
@@ -210,14 +217,22 @@ function assertReadyToLaunch(): void {
   }
   const claude = checks.find((check) => check.name === "claude_available");
   if (!claude?.ok) {
-    process.stderr.write("Warning: claude command is not available on PATH. Worker tasks will fail until Claude Code is installed and logged in.\n");
+    process.stderr.write("Warning: claude command is not available on PATH. Install or configure Claude Code CLI before assigning real worker tasks.\n");
   }
 }
 
-function readinessChecks(): Array<{ name: string; ok: boolean; detail: string }> {
+function readinessChecks(): Array<{ name: string; ok: boolean; detail: string; value?: unknown }> {
+  const installSource = detectInstallSource(repoRoot);
   return [
+    {
+      name: "node_version",
+      ok: Number(process.versions.node.split(".")[0]) >= 20,
+      detail: process.version,
+    },
+    checkCommand("npm"),
     checkCommand("codex"),
     checkCommand("claude"),
+    checkLaunchable("claude", ["--help"]),
     {
       name: "mcp_entry_built",
       ok: existsSync(mcpEntry),
@@ -233,6 +248,12 @@ function readinessChecks(): Array<{ name: string; ok: boolean; detail: string }>
       ok: true,
       detail: "wrapper uses transient codex -c overrides; default Codex config is not edited",
     },
+    {
+      name: "install_source",
+      ok: true,
+      detail: installSource.detail,
+      value: installSource,
+    },
   ];
 }
 
@@ -244,6 +265,32 @@ function checkCommand(command: string): { name: string; ok: boolean; detail: str
     name: `${command}_available`,
     ok: result.status === 0,
     detail: result.stdout.trim() || result.stderr.trim() || "not found on PATH",
+  };
+}
+
+function checkLaunchable(command: string, args: string[]): { name: string; ok: boolean; detail: string } {
+  const result = spawnSync("bash", ["-lc", `${command} ${args.join(" ")} >/dev/null 2>&1`], {
+    encoding: "utf8",
+    timeout: 5_000,
+  });
+  if (result.status === 0) {
+    return {
+      name: `${command}_launchable`,
+      ok: true,
+      detail: `${command} command is callable`,
+    };
+  }
+  if (result.error) {
+    return {
+      name: `${command}_launchable`,
+      ok: false,
+      detail: result.error.message,
+    };
+  }
+  return {
+    name: `${command}_launchable`,
+    ok: false,
+    detail: `${command} exited with code ${result.status ?? "unknown"}`,
   };
 }
 
@@ -273,6 +320,7 @@ Usage:
   codex_lead_cc [--mode supervisor|dev|off] [--mcp-exposure compact|full] [--dry-run]
   codex_lead_cc --doctor
   codex_lead_cc --print-config
+  codex_lead_cc update [--from <git-url>] [--dry-run]
   codex_lead_cc -- <codex args>
 
 Default mode is supervisor with compact MCP exposure. The wrapper starts the real

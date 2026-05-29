@@ -13,7 +13,7 @@ It starts the real `codex` command with compact MCP exposure, a Supervisor Mode 
 The injected instruction is stored at:
 
 ```text
-codex-plugin/skills/codex-lead-cc-supervisor/SKILL.md
+codex-plugin/skills/codex_lead_cc_supervisor/SKILL.md
 ```
 
 Core rules:

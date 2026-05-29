@@ -169,32 +169,32 @@ function printHelp(): void {
   process.stdout.write(`codex_lead_cc Phase 5 local CLI
 
 Usage:
-  codex-lead-cc mcp
-  codex-lead-cc mcp --exposure <compact|full>
-  codex-lead-cc status [--project-id <project>] [--watch]
-  codex-lead-cc cc_dispatch --action <create_plan|assign_task|...>
-  codex-lead-cc cc_wait --project-id <project> [--timeout-sec 30]
-  codex-lead-cc cc_inspect --action <get_status|get_report|...>
-  codex-lead-cc cc_decide --action <approve_permission|stop_task|...>
-  codex-lead-cc cc_run_task --project-path <path> --task <task> [--timeout-sec 300]
-  codex-lead-cc cc_create_worker --project-path <path> --role <scout|implementer|tester|reviewer>
-  codex-lead-cc cc_assign_task --worker-id <ccw_001> --task <task> [--depends-on task_001,task_002]
-  codex-lead-cc cc_create_plan --project-id <project> --goal <goal>
-  codex-lead-cc cc_get_plan --plan-id <plan_001>
-  codex-lead-cc cc_get_status --task-id <task_001>
-  codex-lead-cc cc_get_status --worker-id <ccw_001>
-  codex-lead-cc cc_get_report --task-id <task_001>
-  codex-lead-cc cc_get_report --task-id <task_001> --level <summary|full|raw>
-  codex-lead-cc cc_set_supervisor_state --project-id <project> --state <active|waiting|sleeping>
-  codex-lead-cc cc_wait_for_events --project-id <project> [--timeout-sec 30]
-  codex-lead-cc cc_get_inbox [--project-id <project>] [--only-unread true]
-  codex-lead-cc cc_stop_task --task-id <task_001> [--reason <reason>]
-  codex-lead-cc cc_get_updates --since-event-id <1000>
-  codex-lead-cc cc_get_pending_permissions [--project-id <project>]
-  codex-lead-cc cc_approve_permission --request-id <perm_001> --decision <allow_once|allow_for_task|allow_for_project>
-  codex-lead-cc cc_reject_permission --request-id <perm_001> [--reason <reason>]
-  codex-lead-cc cc_get_diff_summary --task-id <task_001>
-  codex-lead-cc cc_get_diff_detail --task-id <task_001> --file <path>
+  node dist/index.js mcp
+  node dist/index.js mcp --exposure <compact|full>
+  node dist/index.js status [--project-id <project>] [--watch]
+  node dist/index.js cc_dispatch --action <create_plan|assign_task|...>
+  node dist/index.js cc_wait --project-id <project> [--timeout-sec 30]
+  node dist/index.js cc_inspect --action <get_status|get_report|...>
+  node dist/index.js cc_decide --action <approve_permission|stop_task|...>
+  node dist/index.js cc_run_task --project-path <path> --task <task> [--timeout-sec 300]
+  node dist/index.js cc_create_worker --project-path <path> --role <scout|implementer|tester|reviewer>
+  node dist/index.js cc_assign_task --worker-id <ccw_001> --task <task> [--depends-on task_001,task_002]
+  node dist/index.js cc_create_plan --project-id <project> --goal <goal>
+  node dist/index.js cc_get_plan --plan-id <plan_001>
+  node dist/index.js cc_get_status --task-id <task_001>
+  node dist/index.js cc_get_status --worker-id <ccw_001>
+  node dist/index.js cc_get_report --task-id <task_001>
+  node dist/index.js cc_get_report --task-id <task_001> --level <summary|full|raw>
+  node dist/index.js cc_set_supervisor_state --project-id <project> --state <active|waiting|sleeping>
+  node dist/index.js cc_wait_for_events --project-id <project> [--timeout-sec 30]
+  node dist/index.js cc_get_inbox [--project-id <project>] [--only-unread true]
+  node dist/index.js cc_stop_task --task-id <task_001> [--reason <reason>]
+  node dist/index.js cc_get_updates --since-event-id <1000>
+  node dist/index.js cc_get_pending_permissions [--project-id <project>]
+  node dist/index.js cc_approve_permission --request-id <perm_001> --decision <allow_once|allow_for_task|allow_for_project>
+  node dist/index.js cc_reject_permission --request-id <perm_001> [--reason <reason>]
+  node dist/index.js cc_get_diff_summary --task-id <task_001>
+  node dist/index.js cc_get_diff_detail --task-id <task_001> --file <path>
 
 All commands except mcp also support:
   --json '<json>'

@@ -19,7 +19,7 @@ assert.ok(fullTools.includes("cc_assign_task"));
 assert.ok(fullTools.includes("cc_wait_for_events"));
 assert.ok(fullTools.includes("cc_admin"));
 
-const stateRoot = await mkdtemp(path.join(os.tmpdir(), "codex-lead-cc-gateway-"));
+const stateRoot = await mkdtemp(path.join(os.tmpdir(), "codex_lead_cc_gateway_"));
 
 try {
   const service = new CodexLeadService(createRuntime(stateRoot));

@@ -4,12 +4,27 @@
   "description": "Local Codex supervisor and Claude Code worker orchestration runtime.",
   "license": "MIT",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/zake-cn/codex_lead_cc.git"
+  },
   "bin": {
-    "codex-lead-cc": "dist/index.js",
     "codex_lead_cc": "dist/cli/codex_lead_cc.js"
   },
+  "files": [
+    "dist",
+    "README.md",
+    "docs",
+    "codex-plugin",
+    "examples",
+    "!examples/**/__pycache__",
+    "!examples/**/*.pyc",
+    "benchmarks",
+    "package.json"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prepare": "npm run build",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "mcp": "node dist/index.js mcp",

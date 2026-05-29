@@ -8,7 +8,7 @@ import type { PermissionRequestRecord, TaskRecord } from "../src/types.js";
 import { createRuntime } from "../src/orchestrator/runtime.js";
 import { appendEvent, nextId, nowIso } from "../src/orchestrator/state_store.js";
 
-const stateRoot = await mkdtemp(path.join(os.tmpdir(), "codex-lead-cc-wait-mode-"));
+const stateRoot = await mkdtemp(path.join(os.tmpdir(), "codex_lead_cc_wait_mode_"));
 
 try {
   const runtime = createRuntime(stateRoot);

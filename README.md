@@ -47,7 +47,7 @@ Phase 3 upgrades the project into a GitHub-showcase local runtime:
 - Claude Code adapter abstraction with CLI adapter and SDK adapter fallback scaffold.
 - Metrics for runtime, logs, reports, compression ratio, workers, permissions, and patches.
 - Reproducible benchmark assets.
-- Local status dashboard via `codex-lead-cc status --watch`.
+- Local status dashboard via `node dist/index.js status --watch`.
 
 Phase 4 adds Supervisor Wait Mode:
 
@@ -67,19 +67,46 @@ Phase 5 adds mode isolation and a compact MCP gateway:
 
 ## Install
 
+### Recommended: install from GitHub
+
 ```bash
+npm install -g git+https://github.com/zake-cn/codex_lead_cc.git
+codex_lead_cc --doctor
+```
+
+### Update
+
+```bash
+codex_lead_cc update
+```
+
+or manually:
+
+```bash
+npm install -g git+https://github.com/zake-cn/codex_lead_cc.git
+```
+
+### Development Install
+
+```bash
+git clone https://github.com/zake-cn/codex_lead_cc.git
+cd codex_lead_cc
 npm install
 npm run build
 npm link
+codex_lead_cc --doctor
 ```
 
-Requirements:
+## Requirements
 
 - Node.js 20 or newer.
 - npm.
-- Claude Code CLI available as `claude` on `PATH`.
-- Claude Code logged in before assigning real tasks.
 - Codex CLI available as `codex` on `PATH` for the `codex_lead_cc` wrapper.
+- Claude Code CLI available as `claude` on `PATH`.
+
+Authentication note:
+
+`codex_lead_cc` does not check or enforce Claude Code login state. Configure Claude Code according to your own environment. Login state, API keys, custom base URLs, proxies, enterprise settings, or other runtime settings are outside the scope of this project.
 
 ## Normal Codex Vs Supervisor Mode
 

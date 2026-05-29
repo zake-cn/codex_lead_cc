@@ -16,6 +16,10 @@ codex_lead_cc
 
 Runs the real `codex` binary with transient `-c` config overrides. The overrides attach the local `codex_lead_cc` MCP server with compact exposure.
 
+## Claude Code Runtime
+
+`codex_lead_cc` only checks that the `claude` command is available and callable. It does not inspect or enforce Claude Code authentication, API keys, custom base URLs, proxies, enterprise settings, or any other runtime configuration. Those settings stay owned by the user's Claude Code environment.
+
 ## Wrapper Modes
 
 - `supervisor`: default; compact MCP exposure and Supervisor Mode instructions.

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -8,9 +8,23 @@ import { spawnSync } from "node:child_process";
 const wrapperPath = path.resolve("dist/cli/codex_lead_cc.js");
 assert.ok(existsSync(wrapperPath), "wrapper must be built before running smoke:wrapper");
 
+const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
+  bin: Record<string, string>;
+};
+const removedDashedCommand = ["codex", "lead", "cc"].join("-");
+const loggedPhrase = ["logged", "in"].join(" ");
+const apiKeyPhrase = ["api", "key"].join(" ");
+assert.deepEqual(Object.keys(packageJson.bin), ["codex_lead_cc"]);
+assert.equal(packageJson.bin.codex_lead_cc, "dist/cli/codex_lead_cc.js");
+assert.ok(!(removedDashedCommand in packageJson.bin));
+
+const readme = readFileSync("README.md", "utf8");
+assert.ok(!readme.includes(removedDashedCommand));
+assert.ok(!new RegExp(loggedPhrase, "i").test(readme));
+
 const codexConfig = path.join(os.homedir(), ".codex", "config.toml");
 const beforeMtime = existsSync(codexConfig) ? statSync(codexConfig).mtimeMs : undefined;
-const tempHome = await mkdtemp(path.join(os.tmpdir(), "codex-lead-cc-wrapper-"));
+const tempHome = await mkdtemp(path.join(os.tmpdir(), "codex_lead_cc_wrapper_"));
 
 try {
   const dryRun = runWrapper(["--dry-run"], tempHome);
@@ -42,6 +56,19 @@ try {
   assert.equal(doctor.status, 0, doctor.stderr);
   const doctorJson = JSON.parse(doctor.stdout) as { checks: Array<{ name: string; ok: boolean }> };
   assert.ok(doctorJson.checks.some((check) => check.name === "config_isolation" && check.ok));
+  assert.ok(doctorJson.checks.some((check) => check.name === "claude_available"));
+  assert.ok(doctorJson.checks.some((check) => check.name === "claude_launchable"));
+  assert.ok(!new RegExp(`${loggedPhrase}|login required|${apiKeyPhrase}`, "i").test(doctor.stdout));
+
+  const help = runWrapper(["--help"], tempHome);
+  assert.equal(help.status, 0, help.stderr);
+  assert.ok(help.stdout.includes("codex_lead_cc update"));
+  assert.ok(!help.stdout.includes(removedDashedCommand));
+
+  const update = runWrapper(["update", "--dry-run"], tempHome);
+  assert.equal(update.status, 0, update.stderr);
+  assert.match(update.stdout, /Dry run only/);
+  assert.match(update.stdout, /npm install -g git\+https:\/\/github\.com\/zake-cn\/codex_lead_cc\.git|git pull/);
 
   const afterMtime = existsSync(codexConfig) ? statSync(codexConfig).mtimeMs : undefined;
   assert.equal(afterMtime, beforeMtime, "wrapper smoke must not modify default Codex config");
