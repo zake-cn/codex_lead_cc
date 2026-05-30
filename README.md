@@ -72,6 +72,7 @@ Phase 6 adds Supervisor isolation and user configuration:
 - Supervisor tools see `project_id` values such as `proj_001`; internal state maps them to real paths for workers.
 - Worker creation and dispatch inherit the active project session, so compact gateway calls do not need `project_path`.
 - User configuration lives in `~/.codex_lead_cc/config.json`.
+- Claude Code workers inherit a filtered runtime environment through a per-session env file, so API keys, custom base URLs, model settings, and proxy variables from the launching shell can reach the worker without being embedded in Codex MCP config.
 
 ## Install
 
@@ -183,9 +184,73 @@ Default user config:
   "default_mcp_exposure": "compact",
   "worker_mode": "caller_directory",
   "max_workers": 8,
-  "idle_cleanup_minutes": 30
+  "idle_cleanup_minutes": 30,
+  "claude_runtime": {
+    "command": "claude",
+    "args_prefix": [],
+    "env_passthrough": [
+      "ANTHROPIC_API_KEY",
+      "ANTHROPIC_AUTH_TOKEN",
+      "ANTHROPIC_BASE_URL",
+      "ANTHROPIC_MODEL",
+      "ANTHROPIC_DEFAULT_OPUS_MODEL",
+      "ANTHROPIC_DEFAULT_SONNET_MODEL",
+      "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+      "ANTHROPIC_SMALL_FAST_MODEL",
+      "CLAUDE_CODE_SUBAGENT_MODEL",
+      "CLAUDE_CODE_EFFORT_LEVEL",
+      "CLAUDE_CONFIG_DIR",
+      "CLAUDE_CODE_USE_BEDROCK",
+      "CLAUDE_CODE_USE_VERTEX",
+      "OPENAI_API_KEY",
+      "OPENAI_BASE_URL",
+      "DEEPSEEK_API_KEY",
+      "DEEPSEEK_BASE_URL",
+      "HTTP_PROXY",
+      "HTTPS_PROXY",
+      "ALL_PROXY",
+      "NO_PROXY",
+      "http_proxy",
+      "https_proxy",
+      "all_proxy",
+      "no_proxy"
+    ],
+    "env_provider": {
+      "enabled": false,
+      "command": "bash",
+      "args": ["-lc", "env"]
+    }
+  }
 }
 ```
+
+## Claude Runtime Environment
+
+`codex_lead_cc` does not check Claude Code login state and does not require a specific authentication method. If `claude` works in the shell that launches `codex_lead_cc`, workers should use the same runtime inputs as much as possible.
+
+The wrapper captures allowlisted `ANTHROPIC`, `CLAUDE_CODE`, `OPENAI`, `DEEPSEEK`, and proxy environment variables from the current shell, writes them to:
+
+```text
+~/.codex_lead_cc/runtime/sessions/<session_id>/claude_env.json
+```
+
+The generated Codex MCP config only includes `CODEX_LEAD_CC_ENV_FILE`, not token values. The MCP server loads that file and passes the variables to Claude worker processes.
+
+If your Claude runtime is selected by a shell tool such as `cc-switch`, configure `claude_runtime.env_provider` to run any command that prints an `env`-style output. For example:
+
+```json
+{
+  "claude_runtime": {
+    "env_provider": {
+      "enabled": true,
+      "command": "bash",
+      "args": ["-lc", "cc-switch use deepseek >/dev/null 2>&1; env"]
+    }
+  }
+}
+```
+
+Provider output is filtered by `env_passthrough`; nothing outside the allowlist is written to the session env file. `codex_lead_cc --print-config`, `codex_lead_cc --doctor`, and `codex_lead_cc config show` show variable names or redacted placeholders only. Do not paste AUTH_TOKEN, API_KEY, proxy credentials, or env file contents into issues, logs, screenshots, or chat messages.
 
 ## Start MCP
 

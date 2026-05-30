@@ -5,6 +5,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  CODEX_LEAD_CC_ENV_FILE,
+  prepareClaudeRuntimeEnvFile,
+  redactConfigForDisplay,
+  type PreparedClaudeRuntimeEnv,
+} from "../claude/claude_runtime_env.js";
+import {
   ensureUserConfigDirectories,
   loadOrCreateUserConfig,
   resetUserConfig,
@@ -24,6 +30,7 @@ interface WrapperOptions {
   dryRun: boolean;
   printConfig: boolean;
   doctor: boolean;
+  verbose: boolean;
   codexArgs: string[];
 }
 
@@ -39,8 +46,12 @@ interface CodexLaunch {
   runtime_home: string;
   project_id?: string;
   session_id?: string;
+  claude_env_file?: string;
+  claude_runtime_command: string;
+  claude_env_names: string[];
   configToml: string;
   notes: string[];
+  warnings: string[];
 }
 
 const wrapperDir = path.dirname(fileURLToPath(import.meta.url));
@@ -67,10 +78,17 @@ async function main(): Promise<void> {
   const launchSession = options.dryRun || options.doctor || options.printConfig
     ? previewProjectContext()
     : await createLaunchSession(userConfig);
-  const launch = buildCodexLaunch(options, supervisorInstruction, userConfig, launchSession);
+  const claudeRuntimeEnv = options.mode === "off"
+    ? undefined
+    : prepareClaudeRuntimeEnvFile({
+      runtimeHome: userConfig.runtime_home,
+      sessionId: launchSession.session_id,
+      config: userConfig.claude_runtime,
+    });
+  const launch = buildCodexLaunch(options, supervisorInstruction, userConfig, launchSession, claudeRuntimeEnv);
 
   if (options.doctor) {
-    printDoctor(launch, userConfig);
+    printDoctor(launch, userConfig, claudeRuntimeEnv);
     return;
   }
   if (options.printConfig) {
@@ -82,7 +100,7 @@ async function main(): Promise<void> {
     return;
   }
 
-  assertReadyToLaunch();
+  assertReadyToLaunch(userConfig);
 
   const child = spawn("codex", launch.args, {
     cwd: launch.cwd,
@@ -108,6 +126,7 @@ function parseArgs(args: string[]): WrapperOptions {
   let dryRun = false;
   let printConfig = false;
   let doctor = false;
+  let verbose = false;
   const codexArgs: string[] = [];
 
   for (let index = 0; index < args.length; index += 1) {
@@ -150,6 +169,10 @@ function parseArgs(args: string[]): WrapperOptions {
       doctor = true;
       continue;
     }
+    if (arg === "--verbose") {
+      verbose = true;
+      continue;
+    }
     codexArgs.push(arg);
   }
 
@@ -159,6 +182,7 @@ function parseArgs(args: string[]): WrapperOptions {
     dryRun,
     printConfig,
     doctor,
+    verbose,
     codexArgs,
   };
 }
@@ -168,6 +192,7 @@ function buildCodexLaunch(
   supervisorInstruction: string,
   userConfig: EffectiveCodexLeadUserConfig,
   projectContext?: ProjectContext,
+  claudeRuntimeEnv?: PreparedClaudeRuntimeEnv,
 ): CodexLaunch {
   const notes = [
     "Uses transient `codex -c` overrides and does not edit the default Codex config.",
@@ -183,6 +208,9 @@ function buildCodexLaunch(
     if (projectContext) {
       mcpEnv.CODEX_LEAD_CC_SESSION_ID = projectContext.session_id;
       mcpEnv.CODEX_LEAD_CC_PROJECT_ID = projectContext.project_id;
+    }
+    if (claudeRuntimeEnv) {
+      mcpEnv[CODEX_LEAD_CC_ENV_FILE] = claudeRuntimeEnv.env_file;
     }
 
     args.push(
@@ -210,8 +238,12 @@ function buildCodexLaunch(
     runtime_home: userConfig.runtime_home,
     project_id: projectContext?.project_id,
     session_id: projectContext?.session_id,
-    configToml: buildConfigToml(options, userConfig, projectContext, exposure),
+    claude_env_file: claudeRuntimeEnv?.env_file,
+    claude_runtime_command: userConfig.claude_runtime.command,
+    claude_env_names: claudeRuntimeEnv?.env_names ?? [],
+    configToml: buildConfigToml(options, userConfig, projectContext, exposure, claudeRuntimeEnv),
     notes,
+    warnings: claudeRuntimeEnv?.warnings ?? [],
   };
 }
 
@@ -240,6 +272,7 @@ function buildConfigToml(
   userConfig: EffectiveCodexLeadUserConfig,
   projectContext: ProjectContext | undefined,
   exposure: McpExposure,
+  claudeRuntimeEnv?: PreparedClaudeRuntimeEnv,
 ): string {
   if (options.mode === "off") {
     return "# mode=off: no codex_lead_cc MCP configuration is generated.";
@@ -258,16 +291,23 @@ function buildConfigToml(
       `CODEX_LEAD_CC_PROJECT_ID = ${tomlString(projectContext.project_id)}`,
     );
   }
+  if (claudeRuntimeEnv) {
+    lines.push(`${CODEX_LEAD_CC_ENV_FILE} = ${tomlString(claudeRuntimeEnv.env_file)}`);
+  }
   return lines.join("\n");
 }
 
-function printDoctor(launch: ReturnType<typeof buildCodexLaunch>, userConfig: EffectiveCodexLeadUserConfig): void {
-  const checks = readinessChecks(userConfig);
+function printDoctor(
+  launch: ReturnType<typeof buildCodexLaunch>,
+  userConfig: EffectiveCodexLeadUserConfig,
+  claudeRuntimeEnv?: PreparedClaudeRuntimeEnv,
+): void {
+  const checks = readinessChecks(userConfig, claudeRuntimeEnv);
   process.stdout.write(`${JSON.stringify({ ...launch, checks }, null, 2)}\n`);
 }
 
-function assertReadyToLaunch(): void {
-  const checks = readinessChecks();
+function assertReadyToLaunch(userConfig: EffectiveCodexLeadUserConfig): void {
+  const checks = readinessChecks(userConfig);
   const codex = checks.find((check) => check.name === "codex_available");
   const mcpEntryBuilt = checks.find((check) => check.name === "mcp_entry_built");
   if (!codex?.ok) {
@@ -282,8 +322,13 @@ function assertReadyToLaunch(): void {
   }
 }
 
-function readinessChecks(userConfig?: EffectiveCodexLeadUserConfig): Array<{ name: string; ok: boolean; detail: string; value?: unknown }> {
+function readinessChecks(
+  userConfig?: EffectiveCodexLeadUserConfig,
+  claudeRuntimeEnv?: PreparedClaudeRuntimeEnv,
+): Array<{ name: string; ok: boolean; detail: string; value?: unknown }> {
   const installSource = detectInstallSource(repoRoot);
+  const claudeCommand = userConfig?.claude_runtime.command ?? "claude";
+  const claudeArgsPrefix = userConfig?.claude_runtime.args_prefix ?? [];
   const checks: Array<{ name: string; ok: boolean; detail: string; value?: unknown }> = [
     {
       name: "node_version",
@@ -292,8 +337,8 @@ function readinessChecks(userConfig?: EffectiveCodexLeadUserConfig): Array<{ nam
     },
     checkCommand("npm"),
     checkCommand("codex"),
-    checkCommand("claude"),
-    checkLaunchable("claude", ["--help"]),
+    checkRuntimeCommand(claudeCommand),
+    checkLaunchable(claudeCommand, [...claudeArgsPrefix, "--help"]),
     {
       name: "mcp_entry_built",
       ok: existsSync(mcpEntry),
@@ -333,6 +378,43 @@ function readinessChecks(userConfig?: EffectiveCodexLeadUserConfig): Array<{ nam
         ok: existsSync(userConfig.runtime_home),
         detail: userConfig.runtime_home,
       },
+      {
+        name: "claude_runtime_command",
+        ok: true,
+        detail: userConfig.claude_runtime.command,
+        value: {
+          command: userConfig.claude_runtime.command,
+          args_prefix: userConfig.claude_runtime.args_prefix,
+        },
+      },
+      {
+        name: "claude_env_passthrough",
+        ok: true,
+        detail: `${userConfig.claude_runtime.env_passthrough.length} allowlisted variable names`,
+        value: {
+          allowlist: userConfig.claude_runtime.env_passthrough,
+          captured_names: claudeRuntimeEnv?.env_names ?? [],
+          captured_redacted: claudeRuntimeEnv?.redacted_env ?? {},
+        },
+      },
+      {
+        name: "claude_env_file",
+        ok: Boolean(claudeRuntimeEnv?.env_file && existsSync(claudeRuntimeEnv.env_file)),
+        detail: claudeRuntimeEnv?.env_file ?? "not generated",
+      },
+      {
+        name: "claude_env_provider",
+        ok: (claudeRuntimeEnv?.warnings.length ?? 0) === 0,
+        detail: userConfig.claude_runtime.env_provider.enabled
+          ? "enabled"
+          : "disabled",
+        value: {
+          enabled: userConfig.claude_runtime.env_provider.enabled,
+          command: userConfig.claude_runtime.env_provider.command,
+          args: userConfig.claude_runtime.env_provider.args,
+          warnings: claudeRuntimeEnv?.warnings ?? [],
+        },
+      },
     );
   }
   return checks;
@@ -349,27 +431,46 @@ function checkCommand(command: string): { name: string; ok: boolean; detail: str
   };
 }
 
+function checkRuntimeCommand(command: string): { name: string; ok: boolean; detail: string } {
+  if (command.includes("/")) {
+    return {
+      name: "claude_available",
+      ok: existsSync(command),
+      detail: command,
+    };
+  }
+  const result = spawnSync("bash", ["-lc", `command -v ${shellQuote(command)}`], {
+    encoding: "utf8",
+  });
+  return {
+    name: "claude_available",
+    ok: result.status === 0,
+    detail: result.stdout.trim() || result.stderr.trim() || "not found on PATH",
+  };
+}
+
 function checkLaunchable(command: string, args: string[]): { name: string; ok: boolean; detail: string } {
-  const result = spawnSync("bash", ["-lc", `${command} ${args.join(" ")} >/dev/null 2>&1`], {
+  const result = spawnSync(command, args, {
     encoding: "utf8",
     timeout: 5_000,
+    stdio: "ignore",
   });
   if (result.status === 0) {
     return {
-      name: `${command}_launchable`,
+      name: "claude_launchable",
       ok: true,
       detail: `${command} command is callable`,
     };
   }
   if (result.error) {
     return {
-      name: `${command}_launchable`,
+      name: "claude_launchable",
       ok: false,
       detail: result.error.message,
     };
   }
   return {
-    name: `${command}_launchable`,
+    name: "claude_launchable",
     ok: false,
     detail: `${command} exited with code ${result.status ?? "unknown"}`,
   };
@@ -416,13 +517,13 @@ async function runConfigCommand(args: string[]): Promise<void> {
   if (subcommand === "show") {
     const config = await loadOrCreateUserConfig();
     await ensureUserConfigDirectories(config);
-    process.stdout.write(`${JSON.stringify(config, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(redactConfigForDisplay(config), null, 2)}\n`);
     return;
   }
   if (subcommand === "reset") {
     const config = await resetUserConfig();
     await ensureUserConfigDirectories(config);
-    process.stdout.write(`${JSON.stringify(config, null, 2)}\n`);
+    process.stdout.write(`${JSON.stringify(redactConfigForDisplay(config), null, 2)}\n`);
     return;
   }
   throw new Error("config requires one of: show, reset, path.");
@@ -434,6 +535,10 @@ function tomlString(value: string): string {
 
 function tomlArray(values: string[]): string {
   return `[${values.map(tomlString).join(", ")}]`;
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
 function printHelp(): void {

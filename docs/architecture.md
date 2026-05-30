@@ -47,6 +47,7 @@ Claude Code performs tactical work inside a project directory or managed worktre
 - `orchestrator/state_store.ts`: JSON state with a lightweight lock.
 - `orchestrator/task_worker_entry.ts`: detached background runner.
 - `claude/*adapter.ts`: CLI adapter, runtime adapter facade, and SDK fallback abstraction.
+- `claude/claude_runtime_env.ts`: Claude runtime env bridge, env-provider parsing, redaction, and worker env construction.
 - `dashboard/status_tui.ts`: local status dashboard.
 
 ## Runtime Flow
@@ -56,9 +57,11 @@ sequenceDiagram
   participant C as Codex Supervisor
   participant O as codex_lead_cc
   participant P as Permission Engine
+  participant E as Runtime Env Bridge
   participant W as Claude Code Worker
   participant A as Artifacts
 
+  C->>E: wrapper writes session env file
   C->>O: cc_create_plan
   C->>O: cc_create_worker
   C->>O: cc_assign_task
@@ -66,7 +69,8 @@ sequenceDiagram
   O->>P: permission evaluation
   P-->>C: permission request when needed
   C->>P: approve / reject
-  O->>W: launch worker task
+  O->>E: MCP loads CODEX_LEAD_CC_ENV_FILE
+  O->>W: launch worker task with bridged runtime env
   W->>A: logs, report, patch
   O->>O: event log -> wake policy -> supervisor inbox
   O-->>C: wake packet, events, report, diff, metrics

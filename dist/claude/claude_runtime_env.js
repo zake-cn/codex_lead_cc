@@ -1,0 +1,260 @@
+import { spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+export const CODEX_LEAD_CC_ENV_FILE = "CODEX_LEAD_CC_ENV_FILE";
+const CLAUDE_COMMAND_ENV = "CODEX_LEAD_CC_CLAUDE_COMMAND";
+const CLAUDE_ARGS_PREFIX_ENV = "CODEX_LEAD_CC_CLAUDE_ARGS_PREFIX_JSON";
+export const DEFAULT_CLAUDE_ENV_PASSTHROUGH = [
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "ANTHROPIC_BASE_URL",
+    "ANTHROPIC_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "CLAUDE_CODE_SUBAGENT_MODEL",
+    "CLAUDE_CODE_EFFORT_LEVEL",
+    "CLAUDE_CONFIG_DIR",
+    "CLAUDE_CODE_USE_BEDROCK",
+    "CLAUDE_CODE_USE_VERTEX",
+    "OPENAI_API_KEY",
+    "OPENAI_BASE_URL",
+    "DEEPSEEK_API_KEY",
+    "DEEPSEEK_BASE_URL",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+    "no_proxy",
+];
+export function defaultClaudeRuntimeConfig() {
+    return {
+        command: "claude",
+        args_prefix: [],
+        env_passthrough: [...DEFAULT_CLAUDE_ENV_PASSTHROUGH],
+        env_provider: {
+            enabled: false,
+            command: "bash",
+            args: ["-lc", "env"],
+        },
+    };
+}
+export function normalizeClaudeRuntimeConfig(raw) {
+    const defaults = defaultClaudeRuntimeConfig();
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        return defaults;
+    }
+    const input = raw;
+    return {
+        command: typeof input.command === "string" && input.command.trim()
+            ? input.command.trim()
+            : defaults.command,
+        args_prefix: stringArray(input.args_prefix, defaults.args_prefix),
+        env_passthrough: uniqueStrings(input.env_passthrough, defaults.env_passthrough),
+        env_provider: normalizeEnvProvider(input.env_provider, defaults.env_provider),
+    };
+}
+export function prepareClaudeRuntimeEnvFile(args) {
+    const baseEnv = args.baseEnv ?? process.env;
+    const warnings = [];
+    const providerEnv = readProviderEnv(args.config, baseEnv, warnings);
+    const mergedEnv = {
+        ...baseEnv,
+        ...providerEnv,
+    };
+    const allowlist = new Set(args.config.env_passthrough);
+    const filtered = {};
+    for (const key of allowlist) {
+        const value = mergedEnv[key];
+        if (typeof value === "string") {
+            filtered[key] = value;
+        }
+    }
+    filtered[CLAUDE_COMMAND_ENV] = args.config.command;
+    filtered[CLAUDE_ARGS_PREFIX_ENV] = JSON.stringify(args.config.args_prefix);
+    const sessionDir = path.join(args.runtimeHome, "sessions", args.sessionId);
+    mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
+    const envFile = path.join(sessionDir, "claude_env.json");
+    writeFileSync(envFile, `${JSON.stringify(filtered, null, 2)}\n`, {
+        encoding: "utf8",
+        mode: 0o600,
+    });
+    chmodSync(envFile, 0o600);
+    return {
+        env_file: envFile,
+        env_names: Object.keys(filtered).filter((key) => !isInternalRuntimeKey(key)).sort(),
+        redacted_env: redactEnvMap(filtered),
+        provider_enabled: args.config.env_provider.enabled,
+        warnings,
+    };
+}
+export function loadClaudeRuntimeEnvFileIntoProcess(envFile = process.env[CODEX_LEAD_CC_ENV_FILE]) {
+    const warnings = [];
+    if (!envFile) {
+        return { loaded: false, env_names: [], warnings };
+    }
+    if (!existsSync(envFile)) {
+        warnings.push(`Claude runtime env file does not exist: ${envFile}`);
+        return { loaded: false, env_file: envFile, env_names: [], warnings };
+    }
+    try {
+        const parsed = JSON.parse(readFileSync(envFile, "utf8"));
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+            warnings.push(`Claude runtime env file is not a JSON object: ${envFile}`);
+            return { loaded: false, env_file: envFile, env_names: [], warnings };
+        }
+        const names = [];
+        for (const [key, value] of Object.entries(parsed)) {
+            if (isValidEnvName(key) && typeof value === "string") {
+                process.env[key] = value;
+                if (!isInternalRuntimeKey(key)) {
+                    names.push(key);
+                }
+            }
+        }
+        return { loaded: true, env_file: envFile, env_names: names.sort(), warnings };
+    }
+    catch (error) {
+        warnings.push(`Failed to load Claude runtime env file: ${messageFrom(error)}`);
+        return { loaded: false, env_file: envFile, env_names: [], warnings };
+    }
+}
+export function buildClaudeWorkerEnv(baseEnv = process.env) {
+    const env = { ...baseEnv };
+    delete env[CLAUDE_COMMAND_ENV];
+    delete env[CLAUDE_ARGS_PREFIX_ENV];
+    return env;
+}
+export function getClaudeRuntimeCommand(baseEnv = process.env) {
+    return {
+        command: baseEnv[CLAUDE_COMMAND_ENV] || "claude",
+        argsPrefix: parseArgsPrefix(baseEnv[CLAUDE_ARGS_PREFIX_ENV]),
+    };
+}
+export function redactEnvMap(env) {
+    const redacted = {};
+    for (const key of Object.keys(env).sort()) {
+        if (isInternalRuntimeKey(key)) {
+            continue;
+        }
+        redacted[key] = "***";
+    }
+    return redacted;
+}
+export function redactConfigForDisplay(value) {
+    return redactUnknown(value);
+}
+export function isSensitiveName(name) {
+    return /TOKEN|KEY|SECRET|PASSWORD|AUTH/i.test(name);
+}
+function normalizeEnvProvider(raw, defaults) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+        return defaults;
+    }
+    const input = raw;
+    return {
+        enabled: typeof input.enabled === "boolean" ? input.enabled : defaults.enabled,
+        command: typeof input.command === "string" && input.command.trim()
+            ? input.command.trim()
+            : defaults.command,
+        args: stringArray(input.args, defaults.args),
+        strict: typeof input.strict === "boolean" ? input.strict : undefined,
+        timeout_ms: Number.isInteger(input.timeout_ms) && Number(input.timeout_ms) > 0
+            ? Number(input.timeout_ms)
+            : undefined,
+    };
+}
+function readProviderEnv(config, baseEnv, warnings) {
+    const provider = config.env_provider;
+    if (!provider.enabled) {
+        return {};
+    }
+    const result = spawnSync(provider.command, provider.args, {
+        encoding: "utf8",
+        env: baseEnv,
+        timeout: provider.timeout_ms ?? 5_000,
+        maxBuffer: 1024 * 1024,
+    });
+    if (result.status !== 0 || result.error) {
+        const detail = result.error?.message || result.stderr.trim() || `exit code ${result.status ?? "unknown"}`;
+        const message = `Claude runtime env provider failed: ${detail}`;
+        if (provider.strict) {
+            throw new Error(message);
+        }
+        warnings.push(message);
+        return {};
+    }
+    return parseEnvOutput(result.stdout);
+}
+function parseEnvOutput(output) {
+    const parsed = {};
+    for (const line of output.split(/\r?\n/)) {
+        const index = line.indexOf("=");
+        if (index <= 0) {
+            continue;
+        }
+        const key = line.slice(0, index);
+        if (!isValidEnvName(key)) {
+            continue;
+        }
+        parsed[key] = line.slice(index + 1);
+    }
+    return parsed;
+}
+function parseArgsPrefix(raw) {
+    if (!raw) {
+        return [];
+    }
+    try {
+        const parsed = JSON.parse(raw);
+        return Array.isArray(parsed) ? parsed.filter((item) => typeof item === "string") : [];
+    }
+    catch {
+        return [];
+    }
+}
+function uniqueStrings(value, fallback) {
+    const values = stringArray(value, fallback);
+    return [...new Set(values)];
+}
+function stringArray(value, fallback) {
+    if (!Array.isArray(value)) {
+        return [...fallback];
+    }
+    const values = value.filter((item) => typeof item === "string" && item.trim().length > 0);
+    return values.length > 0 ? values.map((item) => item.trim()) : [...fallback];
+}
+function redactUnknown(value) {
+    if (Array.isArray(value)) {
+        return value.map(redactUnknown);
+    }
+    if (!value || typeof value !== "object") {
+        return typeof value === "string" ? redactSecretString(value) : value;
+    }
+    const output = {};
+    for (const [key, child] of Object.entries(value)) {
+        if (isSensitiveName(key)) {
+            output[key] = "***";
+            continue;
+        }
+        output[key] = redactUnknown(child);
+    }
+    return output;
+}
+function redactSecretString(value) {
+    return value.replace(/([A-Z0-9_]*(?:TOKEN|KEY|SECRET|PASSWORD|AUTH)[A-Z0-9_]*=)([^\s;"']+)/gi, "$1***");
+}
+function isValidEnvName(key) {
+    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key);
+}
+function isInternalRuntimeKey(key) {
+    return key === CLAUDE_COMMAND_ENV || key === CLAUDE_ARGS_PREFIX_ENV;
+}
+function messageFrom(error) {
+    return error instanceof Error ? error.message : String(error);
+}
+//# sourceMappingURL=claude_runtime_env.js.map

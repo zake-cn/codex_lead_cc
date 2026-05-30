@@ -82,6 +82,9 @@ Completed in this milestone.
 - Internal `project_id -> project path` mapping
 - Automatic project inheritance for worker creation and compact dispatch
 - Supervisor-facing status and gateway output omit real `project_path`
+- Claude runtime env bridge via `CODEX_LEAD_CC_ENV_FILE`
+- Allowlisted `ANTHROPIC`, `CLAUDE_CODE`, `OPENAI`, `DEEPSEEK`, and proxy env passthrough
+- Optional env provider for shell runtime switchers such as `cc-switch`
 
 ## Later Candidates
 

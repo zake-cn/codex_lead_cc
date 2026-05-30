@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import * as z from "zod/v4";
 
+import { loadClaudeRuntimeEnvFileIntoProcess } from "../claude/claude_runtime_env.js";
 import { ccApprovePermission } from "../tools/cc_approve_permission.js";
 import { ccAssignTask } from "../tools/cc_assign_task.js";
 import { ccAdmin } from "../tools/cc_admin.js";
@@ -70,6 +71,10 @@ export interface McpServerOptions {
 }
 
 export async function startMcpServer(options: McpServerOptions = {}): Promise<void> {
+  const envLoad = loadClaudeRuntimeEnvFileIntoProcess();
+  for (const warning of envLoad.warnings) {
+    process.stderr.write(`${warning}\n`);
+  }
   const exposure = options.exposure ?? normalizeMcpExposure(process.env.MCP_EXPOSURE);
   const server = new McpServer({
     name: "codex_lead_cc",

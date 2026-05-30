@@ -51,10 +51,13 @@ Key settings:
 - `runtime_home`: state, logs, reports, patches, worktrees, and project session mappings.
 - `default_mcp_exposure`: compact by default.
 - `worker_mode`: `caller_directory`, meaning workers inherit the directory where `codex_lead_cc` was invoked.
+- `claude_runtime`: configured Claude command, prefix args, env allowlist, and optional env provider.
 
 ## Claude Code Runtime
 
-`codex_lead_cc` only checks that the `claude` command is available and callable. It does not inspect or enforce Claude Code authentication, API keys, custom base URLs, proxies, enterprise settings, or any other runtime configuration. Those settings stay owned by the user's Claude Code environment.
+`codex_lead_cc` checks that the configured Claude command is available and callable. It does not inspect or enforce Claude Code authentication, API keys, custom base URLs, proxies, enterprise settings, or any other runtime configuration. Those settings stay owned by the user's Claude Code environment.
+
+The wrapper writes allowlisted runtime variables to a per-session env file and passes only `CODEX_LEAD_CC_ENV_FILE` to the MCP server. This keeps tokens out of `codex -c` arguments while still letting workers inherit `ANTHROPIC`, `CLAUDE_CODE`, `OPENAI`, `DEEPSEEK`, and proxy settings from the launching shell. See [claude-runtime-env.md](claude-runtime-env.md).
 
 ## Wrapper Modes
 
@@ -84,6 +87,7 @@ codex -c mcp_servers.codex_lead_cc.command=...
       -c mcp_servers.codex_lead_cc.env.AGENTFOREMAN_HOME=...
       -c mcp_servers.codex_lead_cc.env.CODEX_LEAD_CC_SESSION_ID=...
       -c mcp_servers.codex_lead_cc.env.CODEX_LEAD_CC_PROJECT_ID=...
+      -c mcp_servers.codex_lead_cc.env.CODEX_LEAD_CC_ENV_FILE=...
 ```
 
 Those overrides only apply to the launched session. Ordinary `codex` sessions remain unchanged.

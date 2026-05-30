@@ -1,3 +1,4 @@
+import { type ClaudeRuntimeConfig } from "../claude/claude_runtime_env.js";
 import { type McpExposure } from "../mcp/exposure.js";
 export interface CodexLeadUserConfig {
     version: number;
@@ -7,6 +8,7 @@ export interface CodexLeadUserConfig {
     worker_mode: "caller_directory";
     max_workers: number;
     idle_cleanup_minutes: number;
+    claude_runtime: ClaudeRuntimeConfig;
 }
 export interface EffectiveCodexLeadUserConfig extends CodexLeadUserConfig {
     config_path: string;

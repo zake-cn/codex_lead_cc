@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { defaultClaudeRuntimeConfig, normalizeClaudeRuntimeConfig, } from "../claude/claude_runtime_env.js";
 import { normalizeMcpExposure } from "../mcp/exposure.js";
 const CONFIG_VERSION = 1;
 export function codexLeadHome() {
@@ -19,6 +20,7 @@ export function defaultUserConfig() {
         worker_mode: "caller_directory",
         max_workers: 8,
         idle_cleanup_minutes: 30,
+        claude_runtime: defaultClaudeRuntimeConfig(),
     };
 }
 export async function loadOrCreateUserConfig() {
@@ -31,7 +33,12 @@ export async function loadOrCreateUserConfig() {
         return materializeConfig(defaults);
     }
     try {
-        return materializeConfig(mergeUserConfig(JSON.parse(raw)));
+        const parsed = JSON.parse(raw);
+        const merged = mergeUserConfig(parsed);
+        if (needsMigration(parsed)) {
+            await writeUserConfig(merged);
+        }
+        return materializeConfig(merged);
     }
     catch {
         return materializeConfig(defaultUserConfig());
@@ -59,7 +66,11 @@ function mergeUserConfig(raw) {
         worker_mode: raw.worker_mode === "caller_directory" ? raw.worker_mode : defaults.worker_mode,
         max_workers: positiveInteger(raw.max_workers, defaults.max_workers),
         idle_cleanup_minutes: positiveInteger(raw.idle_cleanup_minutes, defaults.idle_cleanup_minutes),
+        claude_runtime: normalizeClaudeRuntimeConfig(raw.claude_runtime),
     };
+}
+function needsMigration(raw) {
+    return raw.version !== CONFIG_VERSION || !raw.claude_runtime;
 }
 function materializeConfig(config) {
     return {

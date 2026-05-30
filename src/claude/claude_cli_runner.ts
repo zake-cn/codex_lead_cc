@@ -8,9 +8,10 @@ import type {
   FinalTaskStatus,
   RunningClaudeCli,
 } from "../types.js";
+import { buildClaudeWorkerEnv, getClaudeRuntimeCommand } from "./claude_runtime_env.js";
 
 const CLAUDE_NOT_FOUND_MESSAGE =
-  "Claude Code CLI was not found. Install Claude Code, make sure `claude` is on PATH, and log in before running cc_run_task.";
+  "Claude Code CLI was not found. Install or configure the configured Claude runtime command before running worker tasks.";
 
 export async function runClaudeCli(
   options: ClaudeCliRunOptions,
@@ -38,10 +39,11 @@ export function startClaudeCli(
   let stdoutStream: WriteStream | undefined;
   let stderrStream: WriteStream | undefined;
 
-  const child = spawn("claude", ["-p", options.task], {
+  const runtime = getClaudeRuntimeCommand(process.env);
+  const child = spawn(runtime.command, [...runtime.argsPrefix, "-p", options.task], {
     cwd: options.projectPath,
     detached: true,
-    env: process.env,
+    env: buildClaudeWorkerEnv(process.env),
     stdio: ["ignore", "pipe", "pipe"],
   });
 

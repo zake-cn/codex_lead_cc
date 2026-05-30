@@ -2,6 +2,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
+import {
+  defaultClaudeRuntimeConfig,
+  normalizeClaudeRuntimeConfig,
+  type ClaudeRuntimeConfig,
+} from "../claude/claude_runtime_env.js";
 import { normalizeMcpExposure, type McpExposure } from "../mcp/exposure.js";
 
 export interface CodexLeadUserConfig {
@@ -12,6 +17,7 @@ export interface CodexLeadUserConfig {
   worker_mode: "caller_directory";
   max_workers: number;
   idle_cleanup_minutes: number;
+  claude_runtime: ClaudeRuntimeConfig;
 }
 
 export interface EffectiveCodexLeadUserConfig extends CodexLeadUserConfig {
@@ -38,6 +44,7 @@ export function defaultUserConfig(): CodexLeadUserConfig {
     worker_mode: "caller_directory",
     max_workers: 8,
     idle_cleanup_minutes: 30,
+    claude_runtime: defaultClaudeRuntimeConfig(),
   };
 }
 
@@ -53,7 +60,12 @@ export async function loadOrCreateUserConfig(): Promise<EffectiveCodexLeadUserCo
   }
 
   try {
-    return materializeConfig(mergeUserConfig(JSON.parse(raw) as Partial<CodexLeadUserConfig>));
+    const parsed = JSON.parse(raw) as Partial<CodexLeadUserConfig>;
+    const merged = mergeUserConfig(parsed);
+    if (needsMigration(parsed)) {
+      await writeUserConfig(merged);
+    }
+    return materializeConfig(merged);
   } catch {
     return materializeConfig(defaultUserConfig());
   }
@@ -83,7 +95,12 @@ function mergeUserConfig(raw: Partial<CodexLeadUserConfig>): CodexLeadUserConfig
     worker_mode: raw.worker_mode === "caller_directory" ? raw.worker_mode : defaults.worker_mode,
     max_workers: positiveInteger(raw.max_workers, defaults.max_workers),
     idle_cleanup_minutes: positiveInteger(raw.idle_cleanup_minutes, defaults.idle_cleanup_minutes),
+    claude_runtime: normalizeClaudeRuntimeConfig(raw.claude_runtime),
   };
+}
+
+function needsMigration(raw: Partial<CodexLeadUserConfig>): boolean {
+  return raw.version !== CONFIG_VERSION || !raw.claude_runtime;
 }
 
 function materializeConfig(config: CodexLeadUserConfig): EffectiveCodexLeadUserConfig {

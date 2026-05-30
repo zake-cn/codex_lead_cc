@@ -1,7 +1,8 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import path from "node:path";
-const CLAUDE_NOT_FOUND_MESSAGE = "Claude Code CLI was not found. Install Claude Code, make sure `claude` is on PATH, and log in before running cc_run_task.";
+import { buildClaudeWorkerEnv, getClaudeRuntimeCommand } from "./claude_runtime_env.js";
+const CLAUDE_NOT_FOUND_MESSAGE = "Claude Code CLI was not found. Install or configure the configured Claude runtime command before running worker tasks.";
 export async function runClaudeCli(options) {
     const running = startClaudeCli(options);
     return running.finished;
@@ -18,10 +19,11 @@ export function startClaudeCli(options) {
     let logStream;
     let stdoutStream;
     let stderrStream;
-    const child = spawn("claude", ["-p", options.task], {
+    const runtime = getClaudeRuntimeCommand(process.env);
+    const child = spawn(runtime.command, [...runtime.argsPrefix, "-p", options.task], {
         cwd: options.projectPath,
         detached: true,
-        env: process.env,
+        env: buildClaudeWorkerEnv(process.env),
         stdio: ["ignore", "pipe", "pipe"],
     });
     try {

@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { writeFile } from "node:fs/promises";
+import { loadClaudeRuntimeEnvFileIntoProcess } from "../claude/claude_runtime_env.js";
 import { startClaudeTask } from "../claude/claude_runtime_adapter.js";
 import { buildTaskReport, summarizeTaskReport } from "../report/build_report.js";
 import { createRuntime } from "./runtime.js";
@@ -7,6 +8,7 @@ import { syncLinkedPlanTask } from "./plan_state.js";
 import { appendEvent, nowIso } from "./state_store.js";
 import { setWorkerTaskState } from "./worker_state.js";
 async function main() {
+    loadClaudeRuntimeEnvFileIntoProcess();
     const args = parseArgs(process.argv.slice(2));
     const runtime = createRuntime(args.stateDir);
     const store = runtime.store;
