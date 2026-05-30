@@ -72,7 +72,7 @@ try {
   const update = runWrapper(["update", "--dry-run"], tempHome);
   assert.equal(update.status, 0, update.stderr);
   assert.match(update.stdout, /Dry run only/);
-  assert.match(update.stdout, /npm install -g git\+https:\/\/github\.com\/zake-cn\/codex_lead_cc\.git|git pull/);
+  assert.match(update.stdout, /npm install -g --install-links=true git\+https:\/\/github\.com\/zake-cn\/codex_lead_cc\.git|git pull/);
 
   const afterMtime = existsSync(codexConfig) ? statSync(codexConfig).mtimeMs : undefined;
   assert.equal(afterMtime, beforeMtime, "wrapper smoke must not modify default Codex config");

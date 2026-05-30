@@ -78,11 +78,12 @@ Phase 6 adds Supervisor isolation and user configuration:
 ### Recommended: install from GitHub
 
 ```bash
-npm install -g git+https://github.com/zake-cn/codex_lead_cc.git
+npm install -g --install-links=true git+https://github.com/zake-cn/codex_lead_cc.git
 codex_lead_cc --doctor
 ```
 
 The Git URL install uses the committed `dist/` build output and does not run a TypeScript build during installation. End users do not need a local TypeScript compiler.
+The `--install-links=true` flag makes npm install the Git dependency as a real package instead of a transient cache symlink.
 
 ### Update
 
@@ -93,7 +94,7 @@ codex_lead_cc update
 or manually:
 
 ```bash
-npm install -g git+https://github.com/zake-cn/codex_lead_cc.git
+npm install -g --install-links=true git+https://github.com/zake-cn/codex_lead_cc.git
 ```
 
 ### Development Install

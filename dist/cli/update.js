@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 export const DEFAULT_UPDATE_SOURCE = "git+https://github.com/zake-cn/codex_lead_cc.git";
+const GIT_INSTALL_ARGS = ["install", "-g", "--install-links=true"];
 export function parseUpdateArgs(args) {
     let source = DEFAULT_UPDATE_SOURCE;
     let dryRun = false;
@@ -81,7 +82,7 @@ function commandsForUpdate(installSource, source) {
     }
     if (installSource.type === "global_or_package_install") {
         return [
-            { command: "npm", args: ["install", "-g", source] },
+            { command: "npm", args: [...GIT_INSTALL_ARGS, source] },
         ];
     }
     return [];
@@ -104,7 +105,7 @@ function printManualUpdateHelp(source) {
     process.stdout.write(`Unable to determine installation type.
 You can update manually with one of:
 
-npm install -g ${source}
+npm install -g --install-links=true ${source}
 
 or, for a local clone:
 
