@@ -149,6 +149,8 @@ export interface TaskRecord {
 export interface AgentForemanState {
   version: number;
   counters: {
+    project: number;
+    supervisor_session: number;
     worker: number;
     task: number;
     event: number;
@@ -160,6 +162,8 @@ export interface AgentForemanState {
     plan_change: number;
     session: number;
   };
+  projects: Record<string, ProjectRecord>;
+  project_sessions: Record<string, ProjectSessionRecord>;
   workers: Record<string, WorkerRecord>;
   tasks: Record<string, TaskRecord>;
   events: EventRecord[];
@@ -173,8 +177,26 @@ export interface AgentForemanState {
   sessions: Record<string, WorkerSessionRecord>;
 }
 
-export interface CreateWorkerInput {
+export interface ProjectRecord {
+  project_id: string;
+  path: string;
+  created_at: string;
+  updated_at: string;
+  last_session_id?: string;
+}
+
+export interface ProjectSessionRecord {
+  session_id: string;
+  project_id: string;
   project_path: string;
+  supervisor_home: string;
+  status: "active" | "closed";
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateWorkerInput {
+  project_path?: string;
   role: WorkerRole;
   project_id?: string;
   worktree_mode?: "readonly" | "isolated" | "direct";
@@ -398,14 +420,14 @@ export interface SupervisorNotificationRecord {
 }
 
 export interface SetSupervisorStateInput {
-  project_id: string;
+  project_id?: string;
   plan_id?: string;
   state: SupervisorStateValue;
   reason?: string;
 }
 
 export interface GetSupervisorStateInput {
-  project_id: string;
+  project_id?: string;
   plan_id?: string;
 }
 
@@ -558,7 +580,7 @@ export interface PlanChangeRecord {
 }
 
 export interface CreatePlanInput {
-  project_id: string;
+  project_id?: string;
   goal: string;
   tasks?: PlanTaskSpec[];
 }

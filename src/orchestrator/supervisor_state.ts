@@ -66,7 +66,7 @@ export function supervisorStateKey(projectId: string, planId?: string): string {
   return `${projectId}::${planId ?? "*"}`;
 }
 
-function normalizeProjectId(projectId: string): string {
+function normalizeProjectId(projectId: string | undefined): string {
   if (!projectId || typeof projectId !== "string" || projectId.trim().length === 0) {
     throw new Error("project_id is required and must be a non-empty string.");
   }

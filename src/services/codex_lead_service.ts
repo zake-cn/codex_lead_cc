@@ -37,6 +37,7 @@ import type {
   WaitForEventsInput,
 } from "../types.js";
 import { createRuntime, type OrchestratorRuntime } from "../orchestrator/runtime.js";
+import { resolveProjectContext, resolveProjectPathById } from "../orchestrator/project_registry.js";
 import { AdminService } from "./admin_service.js";
 import { DecisionService } from "./decision_service.js";
 import { DispatchService } from "./dispatch_service.js";
@@ -66,7 +67,9 @@ export class CodexLeadService {
   }
 
   async createWorker(input: CreateWorkerInput) {
-    return this.runtime.workers.createWorker(input);
+    return sanitizeSupervisorOutput(
+      await this.runtime.workers.createWorker(await this.applyProjectDefaults(input)),
+    );
   }
 
   async assignTask(input: AssignTaskInput) {
@@ -74,7 +77,7 @@ export class CodexLeadService {
   }
 
   async getStatus(input: GetStatusInput) {
-    return this.runtime.tasks.getStatus(input);
+    return sanitizeSupervisorOutput(await this.runtime.tasks.getStatus(input));
   }
 
   async getReport(input: GetReportInput) {
@@ -82,19 +85,19 @@ export class CodexLeadService {
   }
 
   async setSupervisorState(input: SetSupervisorStateInput) {
-    return this.runtime.supervisorState.setState(input);
+    return this.runtime.supervisorState.setState(await this.applyProjectIdDefault(input));
   }
 
   async getSupervisorState(input: GetSupervisorStateInput) {
-    return this.runtime.supervisorState.getState(input);
+    return this.runtime.supervisorState.getState(await this.applyProjectIdDefault(input));
   }
 
   async waitForEvents(input: WaitForEventsInput) {
-    return this.runtime.wait.waitForEvents(input);
+    return this.runtime.wait.waitForEvents(await this.applyOptionalProjectIdDefault(input));
   }
 
   async getInbox(input: GetInboxInput) {
-    return this.runtime.inbox.getInbox(input);
+    return this.runtime.inbox.getInbox(await this.applyOptionalProjectIdDefault(input));
   }
 
   async markNotificationsRead(input: MarkNotificationsReadInput) {
@@ -114,11 +117,11 @@ export class CodexLeadService {
   }
 
   async getUpdates(input: GetUpdatesInput) {
-    return this.runtime.events.getUpdates(input);
+    return sanitizeSupervisorOutput(await this.runtime.events.getUpdates(await this.applyOptionalProjectIdDefault(input)));
   }
 
   async getPendingPermissions(input: GetPendingPermissionsInput) {
-    return this.runtime.permissions.getPendingPermissions(input);
+    return this.runtime.permissions.getPendingPermissions(await this.applyOptionalProjectIdDefault(input));
   }
 
   async approvePermission(input: ApprovePermissionInput) {
@@ -142,11 +145,15 @@ export class CodexLeadService {
   }
 
   async listWorkers(input: ListWorkersInput) {
-    return this.runtime.workers.listWorkers(input);
+    return sanitizeSupervisorOutput(
+      await this.runtime.workers.listWorkers(await this.applyOptionalProjectIdDefault(input)),
+    );
   }
 
   async listTasks(input: ListTasksInput) {
-    return this.runtime.tasks.listTasks(input);
+    return sanitizeSupervisorOutput(
+      await this.runtime.tasks.listTasks(await this.applyOptionalProjectIdDefault(input)),
+    );
   }
 
   async cleanupWorktree(input: CleanupWorktreeInput) {
@@ -154,7 +161,7 @@ export class CodexLeadService {
   }
 
   async createPlan(input: CreatePlanInput) {
-    return this.runtime.plans.createPlan(input);
+    return this.runtime.plans.createPlan(await this.applyProjectIdDefault(input));
   }
 
   async getPlan(input: GetPlanInput) {
@@ -166,11 +173,11 @@ export class CodexLeadService {
   }
 
   async listPlans(input: ListPlansInput) {
-    return this.runtime.plans.listPlans(input);
+    return this.runtime.plans.listPlans(await this.applyOptionalProjectIdDefault(input));
   }
 
   async getMetrics(input: MetricsInput) {
-    return this.runtime.metrics.getMetrics(input);
+    return this.runtime.metrics.getMetrics(await this.applyOptionalProjectIdDefault(input));
   }
 
   async restartWorker(input: RestartWorkerInput) {
@@ -178,11 +185,11 @@ export class CodexLeadService {
   }
 
   async getWorkerHealth(input: GetWorkerHealthInput) {
-    return this.runtime.sessions.getWorkerHealth(input);
+    return this.runtime.sessions.getWorkerHealth(await this.applyOptionalProjectIdDefault(input));
   }
 
   async cleanupIdleWorkers(input: CleanupIdleWorkersInput) {
-    return this.runtime.sessions.cleanupIdleWorkers(input);
+    return this.runtime.sessions.cleanupIdleWorkers(await this.applyOptionalProjectIdDefault(input));
   }
 
   async dispatch(input: Record<string, unknown>) {
@@ -204,10 +211,57 @@ export class CodexLeadService {
   async admin(input: Record<string, unknown>) {
     return new AdminService(this).admin(input);
   }
+
+  async projectDefaults(input: Record<string, unknown> = {}): Promise<{
+    project_id?: string;
+    project_path?: string;
+  }> {
+    const explicitProjectId = stringValue(input.project_id);
+    const explicitProjectPath = stringValue(input.project_path);
+    const sessionContext = await resolveProjectContext(this.runtime.store, this.runtime.supervisorSessionId);
+    const mappedProjectPath = await resolveProjectPathById(this.runtime.store, explicitProjectId);
+    const canUseSessionPath = !explicitProjectId || explicitProjectId === sessionContext?.project_id;
+
+    return {
+      project_id: explicitProjectId ?? sessionContext?.project_id,
+      project_path: explicitProjectPath ?? mappedProjectPath ?? (canUseSessionPath ? sessionContext?.project_path : undefined),
+    };
+  }
+
+  private async applyProjectDefaults<T extends { project_id?: string; project_path?: string }>(input: T): Promise<T> {
+    const defaults = await this.projectDefaults(input as Record<string, unknown>);
+    return {
+      ...input,
+      project_id: input.project_id ?? defaults.project_id,
+      project_path: input.project_path ?? defaults.project_path,
+    };
+  }
+
+  private async applyProjectIdDefault<T extends { project_id?: string }>(input: T): Promise<T & { project_id: string }> {
+    const defaults = await this.projectDefaults(input as Record<string, unknown>);
+    const projectId = input.project_id ?? defaults.project_id;
+    if (!projectId) {
+      throw new Error("project_id is required when no codex_lead_cc project session is active.");
+    }
+    return {
+      ...input,
+      project_id: projectId,
+    };
+  }
+
+  private async applyOptionalProjectIdDefault<T extends { project_id?: string }>(input: T): Promise<T> {
+    const defaults = await this.projectDefaults(input as Record<string, unknown>);
+    return {
+      ...input,
+      project_id: input.project_id ?? defaults.project_id,
+    };
+  }
 }
 
 export function createCodexLeadService(stateDir?: string): CodexLeadService {
-  return new CodexLeadService(createRuntime(stateDir));
+  return new CodexLeadService(createRuntime(stateDir, {
+    supervisorSessionId: process.env.CODEX_LEAD_CC_SESSION_ID,
+  }));
 }
 
 async function normalizeRunTaskInput(input: CcRunTaskInput): Promise<{
@@ -263,4 +317,26 @@ function appendLine(existing: string, line: string): string {
     return line;
   }
   return `${existing.replace(/\s+$/, "")}\n${line}`;
+}
+
+function sanitizeSupervisorOutput<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeSupervisorOutput(item)) as T;
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (key === "project_path" || key === "execution_path") {
+      continue;
+    }
+    sanitized[key] = sanitizeSupervisorOutput(item);
+  }
+  return sanitized as T;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }

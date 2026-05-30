@@ -6,7 +6,9 @@ Supervisor Mode is launched with:
 codex_lead_cc
 ```
 
-It starts the real `codex` command with compact MCP exposure, a Supervisor Mode instruction prompt, and transient config overrides.
+It starts the real `codex` command from `supervisor_home` with compact MCP exposure, a Supervisor Mode instruction prompt, and transient config overrides.
+
+The caller directory is registered as the active worker project. Supervisor Mode receives a `project_id` such as `proj_001`; Claude Code workers resolve that ID internally to run in the original project directory.
 
 ## Supervisor Rules
 
@@ -21,6 +23,7 @@ Core rules:
 - Do not directly read project source.
 - Do not directly run shell commands for project work.
 - Do not directly edit project files.
+- Treat `project_id` as the project handle; do not ask for or rely on real project paths in compact gateway mode.
 - Delegate reading, implementation, testing, patch generation, and review to Claude Code workers.
 - Use only `cc_dispatch`, `cc_wait`, `cc_inspect`, and `cc_decide`.
 - Prefer summary reports and diff summaries.

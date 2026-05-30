@@ -177,9 +177,9 @@ Usage:
   node dist/index.js cc_inspect --action <get_status|get_report|...>
   node dist/index.js cc_decide --action <approve_permission|stop_task|...>
   node dist/index.js cc_run_task --project-path <path> --task <task> [--timeout-sec 300]
-  node dist/index.js cc_create_worker --project-path <path> --role <scout|implementer|tester|reviewer>
+  node dist/index.js cc_create_worker --role <scout|implementer|tester|reviewer> [--project-path <path>]
   node dist/index.js cc_assign_task --worker-id <ccw_001> --task <task> [--depends-on task_001,task_002]
-  node dist/index.js cc_create_plan --project-id <project> --goal <goal>
+  node dist/index.js cc_create_plan [--project-id <project>] --goal <goal>
   node dist/index.js cc_get_plan --plan-id <plan_001>
   node dist/index.js cc_get_status --task-id <task_001>
   node dist/index.js cc_get_status --worker-id <ccw_001>

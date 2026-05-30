@@ -183,8 +183,10 @@ export class StateStore {
 
 export function defaultState(): AgentForemanState {
   return {
-    version: 4,
+    version: 5,
     counters: {
+      project: 0,
+      supervisor_session: 0,
       worker: 0,
       task: 0,
       event: 0,
@@ -196,6 +198,8 @@ export function defaultState(): AgentForemanState {
       plan_change: 0,
       session: 0,
     },
+    projects: {},
+    project_sessions: {},
     workers: {},
     tasks: {},
     events: [],
@@ -215,7 +219,7 @@ export function nowIso(): string {
 }
 
 export function nextId(
-  prefix: "ccw" | "task" | "perm" | "rule" | "art" | "plan" | "change" | "session" | "note",
+  prefix: "proj" | "sup_session" | "ccw" | "task" | "perm" | "rule" | "art" | "plan" | "change" | "session" | "note",
   counter: number,
 ): string {
   return `${prefix}_${counter.toString().padStart(3, "0")}`;
@@ -251,11 +255,13 @@ function normalizeState(raw: AgentForemanState): AgentForemanState {
   const normalized: AgentForemanState = {
     ...base,
     ...raw,
-    version: 4,
+    version: 5,
     counters: {
       ...base.counters,
       ...(raw.counters ?? {}),
     },
+    projects: raw.projects ?? {},
+    project_sessions: raw.project_sessions ?? {},
     workers: raw.workers ?? {},
     tasks: raw.tasks ?? {},
     events: raw.events ?? [],

@@ -70,6 +70,19 @@ Completed in this milestone.
 - Supervisor Mode instruction skill
 - Gateway and wrapper smoke tests
 
+## Phase 6: Supervisor Isolation And User Configuration
+
+Completed in this milestone.
+
+- User config at `~/.codex_lead_cc/config.json`
+- `codex_lead_cc config show/reset/path`
+- Dedicated `supervisor_home` for Codex cwd
+- Dedicated `runtime_home` for orchestration state
+- Caller-directory project session registration
+- Internal `project_id -> project path` mapping
+- Automatic project inheritance for worker creation and compact dispatch
+- Supervisor-facing status and gateway output omit real `project_path`
+
 ## Later Candidates
 
 - Real Claude Code SDK runtime implementation

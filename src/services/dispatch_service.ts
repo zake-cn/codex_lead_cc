@@ -71,7 +71,8 @@ export class DispatchService {
   }
 
   private async findOrCreateWorker(input: Record<string, unknown>, role: WorkerRole) {
-    const projectId = stringValue(input.project_id);
+    const defaults = await this.service.projectDefaults(input);
+    const projectId = stringValue(input.project_id) ?? defaults.project_id;
     const state = await this.service.runtime.store.readState();
     const existing = Object.values(state.workers)
       .filter((worker) => worker.role === role)
@@ -82,9 +83,9 @@ export class DispatchService {
       return existing;
     }
 
-    const projectPath = stringValue(input.project_path);
+    const projectPath = stringValue(input.project_path) ?? defaults.project_path;
     if (!projectPath) {
-      throw new Error("project_path is required when assigning by worker role and no idle worker exists.");
+      throw new Error("project_path is required when no codex_lead_cc project session is active.");
     }
     return this.service.createWorker({
       project_path: path.resolve(projectPath),

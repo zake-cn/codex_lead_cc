@@ -8,13 +8,13 @@ export class WaitService {
   async wait(input: Record<string, unknown>): Promise<GatewayResult> {
     return gatewayCall("wait", async () => {
       const projectId = stringValue(input.project_id);
-      if (projectId && stringValue(input.state) !== "active") {
+      if (stringValue(input.state) !== "active") {
         await this.service.setSupervisorState({
-          project_id: projectId,
+          ...(projectId ? { project_id: projectId } : {}),
           plan_id: stringValue(input.plan_id),
           state: stringValue(input.state) === "waiting" ? "waiting" : "sleeping",
           reason: stringValue(input.reason) ?? "Supervisor is waiting for wake-worthy worker events.",
-        });
+        } as never);
       }
       return this.service.waitForEvents(input as unknown as WaitForEventsInput);
     });

@@ -17,6 +17,7 @@ import { WaitController } from "./wait_controller.js";
 
 export interface OrchestratorRuntime {
   store: StateStore;
+  supervisorSessionId?: string;
   workers: WorkerManager;
   tasks: TaskManager;
   events: EventLog;
@@ -33,7 +34,7 @@ export interface OrchestratorRuntime {
   wait: WaitController;
 }
 
-export function createRuntime(stateDir?: string): OrchestratorRuntime {
+export function createRuntime(stateDir?: string, options: { supervisorSessionId?: string } = {}): OrchestratorRuntime {
   const store = new StateStore(stateDir);
   const processManager = new ProcessManager();
   const permissions = new PermissionEngine(store);
@@ -41,6 +42,7 @@ export function createRuntime(stateDir?: string): OrchestratorRuntime {
   const scheduler = new Scheduler(store, processManager, dag, permissions);
   return {
     store,
+    supervisorSessionId: options.supervisorSessionId,
     workers: new WorkerManager(store),
     tasks: new TaskManager(store, processManager, scheduler),
     events: new EventLog(store),

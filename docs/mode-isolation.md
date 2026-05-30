@@ -16,6 +16,42 @@ codex_lead_cc
 
 Runs the real `codex` binary with transient `-c` config overrides. The overrides attach the local `codex_lead_cc` MCP server with compact exposure.
 
+## Supervisor Home
+
+Phase 6 runs the Codex Supervisor from a dedicated home directory instead of the caller project:
+
+```text
+~/.codex_lead_cc/supervisor
+```
+
+When the user starts:
+
+```bash
+cd my_project
+codex_lead_cc
+```
+
+the wrapper records `my_project` as the active worker project in runtime state, then starts Codex with `cwd=supervisor_home`. The MCP server receives only a session ID and project ID. Claude Code workers resolve that session internally and run in the original project directory.
+
+The Supervisor-facing identifier is a stable local ID such as `proj_001`; the real project path is internal orchestration state.
+
+## User Configuration
+
+The wrapper creates `~/.codex_lead_cc/config.json` on first launch.
+
+```bash
+codex_lead_cc config show
+codex_lead_cc config reset
+codex_lead_cc config path
+```
+
+Key settings:
+
+- `supervisor_home`: Codex cwd for Supervisor Mode.
+- `runtime_home`: state, logs, reports, patches, worktrees, and project session mappings.
+- `default_mcp_exposure`: compact by default.
+- `worker_mode`: `caller_directory`, meaning workers inherit the directory where `codex_lead_cc` was invoked.
+
 ## Claude Code Runtime
 
 `codex_lead_cc` only checks that the `claude` command is available and callable. It does not inspect or enforce Claude Code authentication, API keys, custom base URLs, proxies, enterprise settings, or any other runtime configuration. Those settings stay owned by the user's Claude Code environment.
@@ -45,6 +81,9 @@ Instead it launches:
 ```text
 codex -c mcp_servers.codex_lead_cc.command=...
       -c mcp_servers.codex_lead_cc.args=[..., "mcp", "--exposure", "compact"]
+      -c mcp_servers.codex_lead_cc.env.AGENTFOREMAN_HOME=...
+      -c mcp_servers.codex_lead_cc.env.CODEX_LEAD_CC_SESSION_ID=...
+      -c mcp_servers.codex_lead_cc.env.CODEX_LEAD_CC_PROJECT_ID=...
 ```
 
 Those overrides only apply to the launched session. Ordinary `codex` sessions remain unchanged.
@@ -55,4 +94,5 @@ Use:
 
 ```bash
 npm run smoke:wrapper
+npm run smoke:isolation
 ```

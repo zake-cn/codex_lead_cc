@@ -32,6 +32,7 @@
     "demo:test": "python3 -m unittest discover -s examples/demo-project/tests",
     "demo:worker": "node dist/index.js cc_create_worker --project-path examples/demo-project --role scout",
     "benchmark": "tsx benchmarks/run_benchmark.ts",
+    "smoke:isolation": "tsx tests/smoke_isolation.ts",
     "smoke:wait-mode": "tsx tests/smoke_wait_mode.ts",
     "smoke:gateway": "tsx tests/smoke_gateway.ts",
     "smoke:wrapper": "tsx tests/smoke_wrapper.ts"

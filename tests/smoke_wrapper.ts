@@ -83,7 +83,7 @@ function runWrapper(args: string[], tempHome: string): { status: number | null; 
     cwd: process.cwd(),
     env: {
       ...process.env,
-      AGENTFOREMAN_HOME: path.join(tempHome, ".agentforeman"),
+      CODEX_LEAD_CC_HOME: path.join(tempHome, ".codex_lead_cc"),
     },
     encoding: "utf8",
   });

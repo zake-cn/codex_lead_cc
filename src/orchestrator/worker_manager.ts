@@ -72,7 +72,6 @@ export class WorkerManager {
         worker_id: worker.id,
         summary: `Created ${role} worker ${worker.id}.`,
         payload: {
-          project_path: projectPath,
           worktree_mode: worker.worktree_mode,
           runtime,
           session_id: sessionId,
@@ -187,7 +186,7 @@ function defaultWorktreeMode(role: WorkerRole): WorkerRecord["worktree_mode"] {
   return "direct";
 }
 
-async function normalizeProjectPath(projectPath: string): Promise<string> {
+async function normalizeProjectPath(projectPath: string | undefined): Promise<string> {
   if (!projectPath || typeof projectPath !== "string") {
     throw new Error("project_path is required and must be a non-empty string.");
   }

@@ -65,6 +65,14 @@ Phase 5 adds mode isolation and a compact MCP gateway:
 - Full fine-grained `cc_*` tools remain available for CLI use and dev-mode MCP exposure.
 - The wrapper does not edit the default Codex config, so ordinary `codex mcp list` is not polluted.
 
+Phase 6 adds Supervisor isolation and user configuration:
+
+- `codex_lead_cc` always starts Codex from `supervisor_home`, not the caller project directory.
+- The caller directory is registered as the active worker project in runtime state.
+- Supervisor tools see `project_id` values such as `proj_001`; internal state maps them to real paths for workers.
+- Worker creation and dispatch inherit the active project session, so compact gateway calls do not need `project_path`.
+- User configuration lives in `~/.codex_lead_cc/config.json`.
+
 ## Install
 
 ### Recommended: install from GitHub
@@ -132,8 +140,48 @@ Useful wrapper commands:
 codex_lead_cc --doctor
 codex_lead_cc --dry-run
 codex_lead_cc --print-config
+codex_lead_cc config show
+codex_lead_cc config reset
+codex_lead_cc config path
 codex_lead_cc --mode supervisor --mcp-exposure compact
 codex_lead_cc --mode dev --mcp-exposure full
+```
+
+## Supervisor Isolation
+
+When launched from a project:
+
+```bash
+cd my_project
+codex_lead_cc
+```
+
+Codex runs from:
+
+```text
+~/.codex_lead_cc/supervisor
+```
+
+Claude Code workers inherit the caller project through an internal session mapping:
+
+```text
+proj_001 -> /absolute/path/to/my_project
+```
+
+The Supervisor receives `project_id`, task IDs, reports, diff summaries, inbox notifications, and metrics. It does not need the real project path for normal compact gateway operation.
+
+Default user config:
+
+```json
+{
+  "version": 1,
+  "supervisor_home": "~/.codex_lead_cc/supervisor",
+  "runtime_home": "~/.codex_lead_cc/runtime",
+  "default_mcp_exposure": "compact",
+  "worker_mode": "caller_directory",
+  "max_workers": 8,
+  "idle_cleanup_minutes": 30
+}
 ```
 
 ## Start MCP

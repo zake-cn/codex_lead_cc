@@ -85,7 +85,7 @@ export async function startMcpServer(options: McpServerOptions = {}): Promise<vo
       title: "Create Claude Code Worker",
       description: "Create a lightweight Claude Code worker bound to a project path and role.",
       inputSchema: {
-        project_path: z.string().min(1),
+        project_path: z.string().min(1).optional(),
         project_id: z.string().min(1).optional(),
         role: z.enum(WORKER_ROLES),
         worktree_mode: z.enum(["readonly", "isolated", "direct"]).optional(),
@@ -149,7 +149,7 @@ export async function startMcpServer(options: McpServerOptions = {}): Promise<vo
       title: "Set Supervisor State",
       description: "Set the Codex supervisor state for a project or plan.",
       inputSchema: {
-        project_id: z.string().min(1),
+        project_id: z.string().min(1).optional(),
         plan_id: z.string().min(1).optional(),
         state: z.enum(SUPERVISOR_STATES),
         reason: z.string().optional(),
@@ -164,7 +164,7 @@ export async function startMcpServer(options: McpServerOptions = {}): Promise<vo
       title: "Get Supervisor State",
       description: "Read the current supervisor state for a project or plan.",
       inputSchema: {
-        project_id: z.string().min(1),
+        project_id: z.string().min(1).optional(),
         plan_id: z.string().min(1).optional(),
       },
     },

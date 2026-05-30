@@ -4,18 +4,43 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  ensureUserConfigDirectories,
+  loadOrCreateUserConfig,
+  resetUserConfig,
+  userConfigPath,
+  type EffectiveCodexLeadUserConfig,
+} from "../config/user_config.js";
 import { normalizeMcpExposure, type McpExposure } from "../mcp/exposure.js";
+import { registerProjectSession, type ProjectContext } from "../orchestrator/project_registry.js";
+import { StateStore } from "../orchestrator/state_store.js";
 import { detectInstallSource, parseUpdateArgs, runUpdate } from "./update.js";
 
 type WrapperMode = "supervisor" | "dev" | "off";
 
 interface WrapperOptions {
   mode: WrapperMode;
-  exposure: McpExposure;
+  exposure?: McpExposure;
   dryRun: boolean;
   printConfig: boolean;
   doctor: boolean;
   codexArgs: string[];
+}
+
+interface CodexLaunch {
+  command: string;
+  args: string[];
+  cwd: string;
+  mode: WrapperMode;
+  exposure: McpExposure;
+  mcp_entry: string;
+  skill_path: string;
+  supervisor_home: string;
+  runtime_home: string;
+  project_id?: string;
+  session_id?: string;
+  configToml: string;
+  notes: string[];
 }
 
 const wrapperDir = path.dirname(fileURLToPath(import.meta.url));
@@ -30,13 +55,22 @@ async function main(): Promise<void> {
     process.exitCode = runUpdate(parseUpdateArgs(rawArgs.slice(1)), repoRoot);
     return;
   }
+  if (rawArgs[0] === "config") {
+    await runConfigCommand(rawArgs.slice(1));
+    return;
+  }
 
   const options = parseArgs(rawArgs);
+  const userConfig = await loadOrCreateUserConfig();
+  await ensureUserConfigDirectories(userConfig);
   const supervisorInstruction = readSupervisorInstruction();
-  const launch = buildCodexLaunch(options, supervisorInstruction);
+  const launchSession = options.dryRun || options.doctor || options.printConfig
+    ? previewProjectContext()
+    : await createLaunchSession(userConfig);
+  const launch = buildCodexLaunch(options, supervisorInstruction, userConfig, launchSession);
 
   if (options.doctor) {
-    printDoctor(launch);
+    printDoctor(launch, userConfig);
     return;
   }
   if (options.printConfig) {
@@ -51,8 +85,11 @@ async function main(): Promise<void> {
   assertReadyToLaunch();
 
   const child = spawn("codex", launch.args, {
-    cwd: process.cwd(),
-    env: process.env,
+    cwd: launch.cwd,
+    env: {
+      ...process.env,
+      PWD: launch.cwd,
+    },
     stdio: "inherit",
   });
 
@@ -118,7 +155,7 @@ function parseArgs(args: string[]): WrapperOptions {
 
   return {
     mode,
-    exposure: explicitExposure ?? (mode === "dev" ? "full" : "compact"),
+    exposure: explicitExposure,
     dryRun,
     printConfig,
     doctor,
@@ -126,30 +163,37 @@ function parseArgs(args: string[]): WrapperOptions {
   };
 }
 
-function buildCodexLaunch(options: WrapperOptions, supervisorInstruction: string): {
-  command: string;
-  args: string[];
-  mode: WrapperMode;
-  exposure: McpExposure;
-  mcp_entry: string;
-  skill_path: string;
-  configToml: string;
-  notes: string[];
-} {
+function buildCodexLaunch(
+  options: WrapperOptions,
+  supervisorInstruction: string,
+  userConfig: EffectiveCodexLeadUserConfig,
+  projectContext?: ProjectContext,
+): CodexLaunch {
   const notes = [
     "Uses transient `codex -c` overrides and does not edit the default Codex config.",
+    "Codex runs from supervisor_home; Claude Code workers inherit the project through session mapping.",
   ];
   const args: string[] = [];
+  const exposure = options.exposure ?? (options.mode === "dev" ? "full" : userConfig.default_mcp_exposure);
 
   if (options.mode !== "off") {
+    const mcpEnv: Record<string, string> = {
+      AGENTFOREMAN_HOME: userConfig.runtime_home,
+    };
+    if (projectContext) {
+      mcpEnv.CODEX_LEAD_CC_SESSION_ID = projectContext.session_id;
+      mcpEnv.CODEX_LEAD_CC_PROJECT_ID = projectContext.project_id;
+    }
+
     args.push(
       "-c",
       `mcp_servers.codex_lead_cc.command=${tomlString(process.execPath)}`,
       "-c",
-      `mcp_servers.codex_lead_cc.args=${tomlArray([mcpEntry, "mcp", "--exposure", options.exposure])}`,
-      "-c",
-      `mcp_servers.codex_lead_cc.env.AGENTFOREMAN_HOME=${tomlString(process.env.AGENTFOREMAN_HOME ?? path.resolve(process.cwd(), ".agentforeman"))}`,
+      `mcp_servers.codex_lead_cc.args=${tomlArray([mcpEntry, "mcp", "--exposure", exposure])}`,
     );
+    for (const [key, value] of Object.entries(mcpEnv)) {
+      args.push("-c", `mcp_servers.codex_lead_cc.env.${key}=${tomlString(value)}`);
+    }
   }
 
   args.push(...injectSupervisorInstruction(options, supervisorInstruction));
@@ -157,11 +201,16 @@ function buildCodexLaunch(options: WrapperOptions, supervisorInstruction: string
   return {
     command: "codex",
     args,
+    cwd: userConfig.supervisor_home,
     mode: options.mode,
-    exposure: options.exposure,
+    exposure,
     mcp_entry: mcpEntry,
     skill_path: skillPath,
-    configToml: buildConfigToml(options),
+    supervisor_home: userConfig.supervisor_home,
+    runtime_home: userConfig.runtime_home,
+    project_id: projectContext?.project_id,
+    session_id: projectContext?.session_id,
+    configToml: buildConfigToml(options, userConfig, projectContext, exposure),
     notes,
   };
 }
@@ -186,22 +235,34 @@ function injectSupervisorInstruction(options: WrapperOptions, supervisorInstruct
   ];
 }
 
-function buildConfigToml(options: WrapperOptions): string {
+function buildConfigToml(
+  options: WrapperOptions,
+  userConfig: EffectiveCodexLeadUserConfig,
+  projectContext: ProjectContext | undefined,
+  exposure: McpExposure,
+): string {
   if (options.mode === "off") {
     return "# mode=off: no codex_lead_cc MCP configuration is generated.";
   }
-  return [
+  const lines = [
     "[mcp_servers.codex_lead_cc]",
     `command = ${tomlString(process.execPath)}`,
-    `args = ${tomlArray([mcpEntry, "mcp", "--exposure", options.exposure])}`,
+    `args = ${tomlArray([mcpEntry, "mcp", "--exposure", exposure])}`,
     "",
     "[mcp_servers.codex_lead_cc.env]",
-    `AGENTFOREMAN_HOME = ${tomlString(process.env.AGENTFOREMAN_HOME ?? path.resolve(process.cwd(), ".agentforeman"))}`,
-  ].join("\n");
+    `AGENTFOREMAN_HOME = ${tomlString(userConfig.runtime_home)}`,
+  ];
+  if (projectContext) {
+    lines.push(
+      `CODEX_LEAD_CC_SESSION_ID = ${tomlString(projectContext.session_id)}`,
+      `CODEX_LEAD_CC_PROJECT_ID = ${tomlString(projectContext.project_id)}`,
+    );
+  }
+  return lines.join("\n");
 }
 
-function printDoctor(launch: ReturnType<typeof buildCodexLaunch>): void {
-  const checks = readinessChecks();
+function printDoctor(launch: ReturnType<typeof buildCodexLaunch>, userConfig: EffectiveCodexLeadUserConfig): void {
+  const checks = readinessChecks(userConfig);
   process.stdout.write(`${JSON.stringify({ ...launch, checks }, null, 2)}\n`);
 }
 
@@ -221,9 +282,9 @@ function assertReadyToLaunch(): void {
   }
 }
 
-function readinessChecks(): Array<{ name: string; ok: boolean; detail: string; value?: unknown }> {
+function readinessChecks(userConfig?: EffectiveCodexLeadUserConfig): Array<{ name: string; ok: boolean; detail: string; value?: unknown }> {
   const installSource = detectInstallSource(repoRoot);
-  return [
+  const checks: Array<{ name: string; ok: boolean; detail: string; value?: unknown }> = [
     {
       name: "node_version",
       ok: Number(process.versions.node.split(".")[0]) >= 20,
@@ -246,7 +307,7 @@ function readinessChecks(): Array<{ name: string; ok: boolean; detail: string; v
     {
       name: "config_isolation",
       ok: true,
-      detail: "wrapper uses transient codex -c overrides; default Codex config is not edited",
+      detail: "wrapper uses transient codex -c overrides and supervisor_home cwd; default Codex config is not edited",
     },
     {
       name: "install_source",
@@ -255,6 +316,26 @@ function readinessChecks(): Array<{ name: string; ok: boolean; detail: string; v
       value: installSource,
     },
   ];
+  if (userConfig) {
+    checks.push(
+      {
+        name: "codex_lead_cc_config",
+        ok: existsSync(userConfig.config_path),
+        detail: userConfig.config_path,
+      },
+      {
+        name: "supervisor_home",
+        ok: existsSync(userConfig.supervisor_home),
+        detail: userConfig.supervisor_home,
+      },
+      {
+        name: "runtime_home",
+        ok: existsSync(userConfig.runtime_home),
+        detail: userConfig.runtime_home,
+      },
+    );
+  }
+  return checks;
 }
 
 function checkCommand(command: string): { name: string; ok: boolean; detail: string } {
@@ -305,6 +386,48 @@ function readSupervisorInstruction(): string {
   ].join("\n");
 }
 
+async function createLaunchSession(userConfig: EffectiveCodexLeadUserConfig): Promise<ProjectContext> {
+  const session = await registerProjectSession({
+    store: new StateStore(userConfig.runtime_home),
+    projectPath: process.cwd(),
+    supervisorHome: userConfig.supervisor_home,
+  });
+  return {
+    session_id: session.session_id,
+    project_id: session.project_id,
+    project_path: session.project_path,
+  };
+}
+
+function previewProjectContext(): ProjectContext {
+  return {
+    session_id: "sup_session_preview",
+    project_id: "proj_preview",
+    project_path: "",
+  };
+}
+
+async function runConfigCommand(args: string[]): Promise<void> {
+  const subcommand = args[0] ?? "show";
+  if (subcommand === "path") {
+    process.stdout.write(`${userConfigPath()}\n`);
+    return;
+  }
+  if (subcommand === "show") {
+    const config = await loadOrCreateUserConfig();
+    await ensureUserConfigDirectories(config);
+    process.stdout.write(`${JSON.stringify(config, null, 2)}\n`);
+    return;
+  }
+  if (subcommand === "reset") {
+    const config = await resetUserConfig();
+    await ensureUserConfigDirectories(config);
+    process.stdout.write(`${JSON.stringify(config, null, 2)}\n`);
+    return;
+  }
+  throw new Error("config requires one of: show, reset, path.");
+}
+
 function tomlString(value: string): string {
   return JSON.stringify(value);
 }
@@ -320,12 +443,15 @@ Usage:
   codex_lead_cc [--mode supervisor|dev|off] [--mcp-exposure compact|full] [--dry-run]
   codex_lead_cc --doctor
   codex_lead_cc --print-config
+  codex_lead_cc config show
+  codex_lead_cc config reset
+  codex_lead_cc config path
   codex_lead_cc update [--from <git-url>] [--dry-run]
   codex_lead_cc -- <codex args>
 
 Default mode is supervisor with compact MCP exposure. The wrapper starts the real
-codex command with transient config overrides and does not edit the default
-Codex config.
+codex command from supervisor_home with transient config overrides and does not
+edit the default Codex config.
 `);
 }
 
