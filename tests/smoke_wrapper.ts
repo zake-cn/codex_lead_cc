@@ -10,6 +10,7 @@ assert.ok(existsSync(wrapperPath), "wrapper must be built before running smoke:w
 
 const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
   bin: Record<string, string>;
+  scripts: Record<string, string>;
 };
 const removedDashedCommand = ["codex", "lead", "cc"].join("-");
 const loggedPhrase = ["logged", "in"].join(" ");
@@ -17,6 +18,9 @@ const apiKeyPhrase = ["api", "key"].join(" ");
 assert.deepEqual(Object.keys(packageJson.bin), ["codex_lead_cc"]);
 assert.equal(packageJson.bin.codex_lead_cc, "dist/cli/codex_lead_cc.js");
 assert.ok(!(removedDashedCommand in packageJson.bin));
+assert.ok(!("prepare" in packageJson.scripts), "Git URL install must not run a prepare build");
+assert.ok(!("prepack" in packageJson.scripts), "Git URL install must not run a prepack build");
+assert.equal(packageJson.scripts.build, "tsc -p tsconfig.json");
 
 const readme = readFileSync("README.md", "utf8");
 assert.ok(!readme.includes(removedDashedCommand));
