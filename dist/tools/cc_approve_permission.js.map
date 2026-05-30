@@ -1,0 +1,1 @@
+{"version":3,"file":"cc_approve_permission.js","sourceRoot":"","sources":["../../src/tools/cc_approve_permission.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,sBAAsB,EAAE,MAAM,mCAAmC,CAAC;AAG3E,MAAM,CAAC,KAAK,UAAU,mBAAmB,CAAC,KAA6B;IACrE,OAAO,sBAAsB,EAAE,CAAC,iBAAiB,CAAC,KAAK,CAAC,CAAC;AAC3D,CAAC"}

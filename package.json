@@ -24,7 +24,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "prepare": "npm run build",
+    "prepack": "npm run build",
     "start": "node dist/index.js",
     "dev": "tsx src/index.ts",
     "mcp": "node dist/index.js mcp",

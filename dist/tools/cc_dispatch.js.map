@@ -1,0 +1,1 @@
+{"version":3,"file":"cc_dispatch.js","sourceRoot":"","sources":["../../src/tools/cc_dispatch.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,sBAAsB,EAAE,MAAM,mCAAmC,CAAC;AAE3E,MAAM,CAAC,KAAK,UAAU,UAAU,CAAC,KAA8B;IAC7D,OAAO,sBAAsB,EAAE,CAAC,QAAQ,CAAC,KAAK,CAAC,CAAC;AAClD,CAAC"}

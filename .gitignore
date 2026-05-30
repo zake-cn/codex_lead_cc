@@ -1,5 +1,4 @@
 node_modules/
-dist/
 .agentforeman/
 .codex_lead_cc/
 *.log

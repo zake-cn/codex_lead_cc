@@ -82,6 +82,8 @@ npm install -g git+https://github.com/zake-cn/codex_lead_cc.git
 codex_lead_cc --doctor
 ```
 
+The Git URL install uses the committed `dist/` build output. End users do not need a local TypeScript compiler for installation.
+
 ### Update
 
 ```bash

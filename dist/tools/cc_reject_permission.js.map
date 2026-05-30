@@ -1,0 +1,1 @@
+{"version":3,"file":"cc_reject_permission.js","sourceRoot":"","sources":["../../src/tools/cc_reject_permission.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,sBAAsB,EAAE,MAAM,mCAAmC,CAAC;AAG3E,MAAM,CAAC,KAAK,UAAU,kBAAkB,CAAC,KAA4B;IACnE,OAAO,sBAAsB,EAAE,CAAC,gBAAgB,CAAC,KAAK,CAAC,CAAC;AAC1D,CAAC"}
