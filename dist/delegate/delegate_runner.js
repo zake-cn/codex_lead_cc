@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { loadClaudeRuntimeEnvFileIntoProcess } from "../claude/claude_runtime_env.js";
+import { writeFileSync } from "node:fs";
+import { buildFinalClaudeEnv, criticalEnvPresent, getClaudeRuntimeCommand, loadClaudeRuntimeEnvFile, } from "../claude/claude_runtime_env.js";
 import { startClaudeCli } from "../claude/claude_cli_runner.js";
 import { writePrestartArtifacts, writeResultArtifacts } from "./artifacts.js";
 import { loadSessionFile } from "./session.js";
@@ -20,27 +21,30 @@ export async function runDelegate(options) {
     // 2. Load session
     const session = await loadSessionFile(options.sessionFile);
     log(`session loaded (project: ${session.project_path}, supervisor: ${session.supervisor_home})`);
-    // 2a. Consistency: runtime dirs must be inside supervisor_home
     assertInside(session.task_dir, session.supervisor_home, "task_dir");
     assertInside(session.artifact_root, session.supervisor_home, "artifact_root");
-    // 2b. Consistency: project_path must NOT be inside supervisor_home
     assertOutside(session.project_path, session.supervisor_home, "project_path");
-    // 2c. Consistency: taskFile must belong to this session
     if (!isInside(options.taskFile, session.task_dir)) {
         throw new Error(`TaskFile does not belong to this session.\n` +
-            `  task_file: ${options.taskFile}\n` +
-            `  session.task_dir: ${session.task_dir}`);
+            `  task_file: ${options.taskFile}\n  session.task_dir: ${session.task_dir}`);
     }
-    // 3. Load Claude runtime env
-    loadClaudeRuntimeEnvFileIntoProcess(session.claude_env_file);
-    log("claude env loaded");
+    // 3. EXPLICIT: load Claude env from file (no process.env mutation)
+    const loadedClaudeEnv = loadClaudeRuntimeEnvFile(session.claude_env_file);
+    if (loadedClaudeEnv.loaded) {
+        log(`claude env loaded: ${loadedClaudeEnv.env_names.length} vars`);
+    }
+    else {
+        log(`WARNING: claude env NOT loaded from ${session.claude_env_file}`);
+        for (const w of loadedClaudeEnv.warnings)
+            log(`  env warning: ${w}`);
+    }
     // 4. Load and validate TaskFile
     const rawTaskFile = await readFile(options.taskFile, "utf8");
     const taskFile = await loadTaskFile(options.taskFile);
     log(`task loaded (id: ${taskFile.task_id}, type: ${taskFile.worker_type})`);
     // 5. Build Claude prompt
     const prompt = buildClaudePrompt(taskFile, rawTaskFile);
-    // 6. Write prestart artifacts BEFORE launching Claude
+    // 6. Write prestart artifacts
     const artifactDir = writePrestartArtifacts({
         artifactRoot: session.artifact_root,
         taskFile,
@@ -48,41 +52,61 @@ export async function runDelegate(options) {
         prompt,
     });
     log(`artifact dir prepared: ${artifactDir}`);
-    // 7. Dry-run mode
+    // 6a. Build FINAL Claude env explicitly (loadedEnv overrides baseEnv)
+    const finalClaudeEnv = buildFinalClaudeEnv({
+        baseEnv: process.env,
+        loadedEnv: loadedClaudeEnv.env,
+    });
+    // 6b. Write claude_env_applied.json diagnostic (names only, NO values)
+    const runtime = getClaudeRuntimeCommand(finalClaudeEnv);
+    const critical = criticalEnvPresent(loadedClaudeEnv.env);
+    const hasProxy = Object.entries(critical)
+        .filter(([k]) => /proxy/i.test(k))
+        .some(([, v]) => v === true);
+    writeEnvDiagnostic(artifactDir, {
+        env_file: loadedClaudeEnv.env_file ?? "(none)",
+        loaded: loadedClaudeEnv.loaded,
+        env_names: loadedClaudeEnv.env_names,
+        critical_env_present: critical,
+        command: runtime.command,
+        args_prefix_length: runtime.argsPrefix.length,
+        project_path: session.project_path,
+        proxy_present: hasProxy,
+    });
+    if (!loadedClaudeEnv.loaded) {
+        log("WARNING: proceeding without Claude env — Claude may lack auth/proxy config");
+    }
+    const missingCritical = Object.entries(critical).filter(([, v]) => !v).map(([k]) => k);
+    if (missingCritical.length > 0) {
+        log(`WARNING: missing critical env vars: ${missingCritical.join(", ")}`);
+    }
+    // 7. Dry-run
     if (options.dryRun) {
         log("dry-run: would launch Claude, exiting");
-        return dryRunResult(taskFile, session, prompt, artifactDir);
+        return dryRunResult(taskFile, session, prompt, artifactDir, loadedClaudeEnv.loaded, missingCritical);
     }
-    // 8. Launch Claude Code in real project directory
-    log(`launching claude (cwd: ${session.project_path}, timeout: ${options.timeoutSec}s)`);
+    // 8. Launch Claude — pass env EXPLICITLY
+    log(`launching claude (cwd: ${session.project_path}, cmd: ${runtime.command}, timeout: ${options.timeoutSec}s)`);
     const startedAt = Date.now();
-    let stdoutChunks = 0;
-    let stderrChunks = 0;
+    let stdoutChunks = 0, stderrChunks = 0;
     const running = startClaudeCli({
         projectPath: session.project_path,
         task: prompt,
         timeoutSec: options.timeoutSec,
-        onStdout(_chunk) {
-            stdoutChunks++;
-            if (stdoutChunks === 1)
-                log("claude stdout started");
-        },
-        onStderr(_chunk) {
-            stderrChunks++;
-            if (stderrChunks === 1)
-                log("claude stderr started");
-        },
+        env: finalClaudeEnv,
+        onStdout(_chunk) { stdoutChunks++; if (stdoutChunks === 1)
+            log("claude stdout started"); },
+        onStderr(_chunk) { stderrChunks++; if (stderrChunks === 1)
+            log("claude stderr started"); },
     });
-    // 9. Wait for Claude to finish
+    // 9. Wait
     const result = await running.finished;
     const durationMs = Date.now() - startedAt;
-    log(`claude ${result.status} (exit: ${result.exitCode}, duration: ${durationMs}ms, stdout_chunks: ${stdoutChunks}, stderr_chunks: ${stderrChunks})`);
-    // 10. Write result artifacts
+    log(`claude ${result.status} (exit: ${result.exitCode}, duration: ${durationMs}ms)`);
+    // 10. Result artifacts
     const delegateResult = writeResultArtifacts({
         artifactRoot: session.artifact_root,
-        taskFile,
-        rawTaskFile,
-        prompt,
+        taskFile, rawTaskFile, prompt,
         projectPath: session.project_path,
         stdout: result.stdout,
         stderr: result.stderr,
@@ -98,35 +122,33 @@ function buildClaudePrompt(taskFile, rawTaskFile) {
     const header = taskFile.worker_type === "readonly"
         ? [
             "You are Claude Code executing a delegated codex_lead_cc task.",
-            "",
-            "You are running inside the real project directory.",
-            "Follow the TaskFile exactly.",
-            "",
-            "WorkerType: readonly",
-            "",
+            "", "You are running inside the real project directory.",
+            "Follow the TaskFile exactly.", "",
+            "WorkerType: readonly", "",
             "You may inspect files and run non-mutating inspection commands when useful.",
-            "You must not modify files.",
-            "You must not delete files.",
-            "You must not invoke nested delegate runs.",
-            "",
+            "You must not modify files.", "You must not delete files.",
+            "You must not invoke nested delegate runs.", "",
             "Return the required report headings exactly.",
         ]
         : [
             "You are Claude Code executing a delegated codex_lead_cc task.",
-            "",
-            "You are running inside the real project directory.",
-            "Follow the TaskFile exactly.",
-            "",
-            "WorkerType: write",
-            "",
+            "", "You are running inside the real project directory.",
+            "Follow the TaskFile exactly.", "",
+            "WorkerType: write", "",
             "You may modify files only inside Allowed Scope.",
             "You must not touch Forbidden Actions.",
             "You must run or explain Verification.",
-            "You must not invoke nested delegate runs.",
-            "",
+            "You must not invoke nested delegate runs.", "",
             "Return the required report headings exactly.",
         ];
     return [...header, "", "---", "", rawTaskFile].join("\n");
+}
+// ── Env diagnostic ──
+function writeEnvDiagnostic(artifactDir, info) {
+    try {
+        writeFileSync(path.join(artifactDir, "claude_env_applied.json"), JSON.stringify(info, null, 2) + "\n", "utf8");
+    }
+    catch { /* non-fatal */ }
 }
 // ── CLI ──
 export async function delegateMain(rawArgs) {
@@ -135,8 +157,7 @@ export async function delegateMain(rawArgs) {
     let timeoutSec = 300;
     let dryRun = false;
     for (let i = 0; i < rawArgs.length; i++) {
-        const arg = rawArgs[i];
-        const next = rawArgs[i + 1];
+        const arg = rawArgs[i], next = rawArgs[i + 1];
         if (arg === "--task-file") {
             if (!next)
                 throw new Error("--task-file requires a value.");
@@ -153,9 +174,8 @@ export async function delegateMain(rawArgs) {
             if (!next)
                 throw new Error("--timeout-sec requires a value.");
             timeoutSec = Number(next);
-            if (!Number.isInteger(timeoutSec) || timeoutSec <= 0) {
+            if (!Number.isInteger(timeoutSec) || timeoutSec <= 0)
                 throw new Error("--timeout-sec must be a positive integer.");
-            }
             i++;
         }
         else if (arg === "--dry-run") {
@@ -184,48 +204,37 @@ export async function delegateMain(rawArgs) {
 }
 function delegateHelp() {
     return `codex_lead_cc delegate — Execute a delegated task via Claude Code
-
-Usage:
-  codex_lead_cc delegate --task-file <path> --session-file <path> [--timeout-sec 300] [--dry-run]
-
+Usage: codex_lead_cc delegate --task-file <path> --session-file <path> [--timeout-sec 300] [--dry-run]
 Must be invoked with CODEX_CLAUDE_CHILD_THREAD=1.
 `;
 }
-// ── Logging (stderr only) ──
+// ── Logging ──
 function log(message) {
     process.stderr.write(`[delegate] ${message}\n`);
 }
 // ── Path checks ──
 function isInside(child, parent) {
-    const c = path.resolve(child);
-    const p = path.resolve(parent);
+    const c = path.resolve(child), p = path.resolve(parent);
     return c === p || c.startsWith(p + path.sep);
 }
 function assertInside(child, parent, label) {
-    if (!isInside(child, parent)) {
-        throw new Error(`${label} must be inside supervisor_home.\n` +
-            `  ${label}: ${child}\n` +
-            `  supervisor_home: ${parent}`);
-    }
+    if (!isInside(child, parent))
+        throw new Error(`${label} must be inside supervisor_home.\n  ${label}: ${child}\n  supervisor_home: ${parent}`);
 }
 function assertOutside(child, parent, label) {
-    if (isInside(child, parent)) {
-        throw new Error(`${label} must NOT be inside supervisor_home.\n` +
-            `  ${label}: ${child}\n` +
-            `  supervisor_home: ${parent}`);
-    }
+    if (isInside(child, parent))
+        throw new Error(`${label} must NOT be inside supervisor_home.\n  ${label}: ${child}\n  supervisor_home: ${parent}`);
 }
 // ── Dry run ──
-function dryRunResult(taskFile, session, prompt, artifactDir) {
+function dryRunResult(taskFile, session, prompt, artifactDir, envLoaded, missingCritical) {
+    const note = envLoaded
+        ? (missingCritical.length > 0 ? `WARNING: missing critical env vars: ${missingCritical.join(", ")}` : "env loaded successfully")
+        : "WARNING: Claude runtime env file was not loaded — Claude may lack auth/proxy config.";
     return {
-        task_id: taskFile.task_id,
-        worker_type: taskFile.worker_type,
-        status: "completed",
-        exit_code: 0,
-        duration_ms: 0,
-        artifact_dir: artifactDir,
-        changed_files: [],
-        summary: `[dry-run] Would execute Claude Code in: ${session.project_path}\n\nPrompt preview (first 500 chars):\n${prompt.slice(0, 500)}`,
+        task_id: taskFile.task_id, worker_type: taskFile.worker_type,
+        status: "completed", exit_code: 0, duration_ms: 0,
+        artifact_dir: artifactDir, changed_files: [],
+        summary: `[dry-run] Would execute Claude in: ${session.project_path}\nEnv status: ${note}\n\nPrompt preview (first 500 chars):\n${prompt.slice(0, 500)}`,
     };
 }
 //# sourceMappingURL=delegate_runner.js.map

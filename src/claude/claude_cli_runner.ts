@@ -30,11 +30,13 @@ export function startClaudeCli(
   let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
   let child: ChildProcess | undefined;
 
-  const runtime = getClaudeRuntimeCommand(process.env);
+  const baseEnv = options.env ?? process.env;
+  const runtime = getClaudeRuntimeCommand(baseEnv);
+  const workerEnv = buildClaudeWorkerEnv(baseEnv);
   child = spawn(runtime.command, [...runtime.argsPrefix, "-p", options.task], {
     cwd: options.projectPath,
     detached: false,
-    env: buildClaudeWorkerEnv(process.env),
+    env: workerEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
 

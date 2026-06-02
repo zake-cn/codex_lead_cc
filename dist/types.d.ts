@@ -4,6 +4,7 @@ export interface ClaudeCliRunOptions {
     projectPath: string;
     task: string;
     timeoutSec: number;
+    env?: NodeJS.ProcessEnv;
     onStdout?: (chunk: string) => void;
     onStderr?: (chunk: string) => void;
 }

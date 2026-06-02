@@ -18,8 +18,16 @@ export interface PreparedClaudeRuntimeEnv {
     provider_enabled: boolean;
     warnings: string[];
 }
+export interface LoadedClaudeRuntimeEnv {
+    loaded: boolean;
+    env_file?: string;
+    env: Record<string, string>;
+    env_names: string[];
+    warnings: string[];
+}
 export declare const CODEX_LEAD_CC_ENV_FILE = "CODEX_LEAD_CC_ENV_FILE";
 export declare const DEFAULT_CLAUDE_ENV_PASSTHROUGH: readonly ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "ANTHROPIC_DEFAULT_HAIKU_MODEL", "ANTHROPIC_SMALL_FAST_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "OPENAI_API_KEY", "OPENAI_BASE_URL", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"];
+export declare const CRITICAL_ENV_VARS: readonly ["ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL", "CLAUDE_CODE_SUBAGENT_MODEL", "CLAUDE_CODE_EFFORT_LEVEL", "DEEPSEEK_API_KEY", "DEEPSEEK_BASE_URL", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY", "http_proxy", "https_proxy", "all_proxy", "no_proxy"];
 export declare function defaultClaudeRuntimeConfig(): ClaudeRuntimeConfig;
 export declare function normalizeClaudeRuntimeConfig(raw: unknown): ClaudeRuntimeConfig;
 export declare function prepareClaudeRuntimeEnvFile(args: {
@@ -28,12 +36,17 @@ export declare function prepareClaudeRuntimeEnvFile(args: {
     config: ClaudeRuntimeConfig;
     baseEnv?: NodeJS.ProcessEnv;
 }): PreparedClaudeRuntimeEnv;
+export declare function loadClaudeRuntimeEnvFile(envFile: string): LoadedClaudeRuntimeEnv;
 export declare function loadClaudeRuntimeEnvFileIntoProcess(envFile?: string | undefined): {
     loaded: boolean;
     env_file?: string;
     env_names: string[];
     warnings: string[];
 };
+export declare function buildFinalClaudeEnv(args: {
+    baseEnv: NodeJS.ProcessEnv;
+    loadedEnv: Record<string, string>;
+}): NodeJS.ProcessEnv;
 export declare function buildClaudeWorkerEnv(baseEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
 export declare function getClaudeRuntimeCommand(baseEnv?: NodeJS.ProcessEnv): {
     command: string;
@@ -42,3 +55,4 @@ export declare function getClaudeRuntimeCommand(baseEnv?: NodeJS.ProcessEnv): {
 export declare function redactEnvMap(env: Record<string, string>): Record<string, string>;
 export declare function redactConfigForDisplay<T>(value: T): T;
 export declare function isSensitiveName(name: string): boolean;
+export declare function criticalEnvPresent(env: Record<string, string>): Record<string, boolean>;
