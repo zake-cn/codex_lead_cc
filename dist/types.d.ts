@@ -4,6 +4,8 @@ export interface ClaudeCliRunOptions {
     projectPath: string;
     task: string;
     timeoutSec: number;
+    onStdout?: (chunk: string) => void;
+    onStderr?: (chunk: string) => void;
 }
 export interface ClaudeCliRunResult {
     status: FinalTaskStatus;

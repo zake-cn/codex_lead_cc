@@ -2,41 +2,71 @@
 import { readFile } from "node:fs/promises";
 import { loadClaudeRuntimeEnvFileIntoProcess } from "../claude/claude_runtime_env.js";
 import { startClaudeCli } from "../claude/claude_cli_runner.js";
-import { writeArtifacts } from "./artifacts.js";
+import { writePrestartArtifacts, writeResultArtifacts } from "./artifacts.js";
 import { loadSessionFile } from "./session.js";
 import { loadTaskFile } from "./task_file.js";
 export async function runDelegate(options) {
-    // 1. Reject direct invocation — must be called from a Codex subagent
+    // 1. Guard
     if (process.env.CODEX_CLAUDE_CHILD_THREAD !== "1") {
-        process.stderr.write("codex_lead_cc delegate must be invoked from a Codex subagent shell.\n");
+        process.stderr.write("delegate must be invoked from a Codex subagent shell (CODEX_CLAUDE_CHILD_THREAD=1).\n");
         process.exitCode = 1;
-        throw new Error("codex_lead_cc delegate must be invoked from a Codex subagent shell.\n" +
-            "Set CODEX_CLAUDE_CHILD_THREAD=1 before invoking delegate.");
+        throw new Error("delegate must be invoked from a Codex subagent shell. Set CODEX_CLAUDE_CHILD_THREAD=1.");
     }
+    log("delegate started");
+    log(`  task_file: ${options.taskFile}`);
+    log(`  session_file: ${options.sessionFile}`);
+    log(`  timeout_sec: ${options.timeoutSec}`);
     // 2. Load session
     const session = await loadSessionFile(options.sessionFile);
-    // 3. Load Claude runtime env into process
+    log(`session loaded (project: ${session.project_path})`);
+    // 3. Load Claude runtime env
     loadClaudeRuntimeEnvFileIntoProcess(session.claude_env_file);
+    log("claude env loaded");
     // 4. Load and validate TaskFile
     const rawTaskFile = await readFile(options.taskFile, "utf8");
     const taskFile = await loadTaskFile(options.taskFile);
+    log(`task loaded (id: ${taskFile.task_id}, type: ${taskFile.worker_type})`);
     // 5. Build Claude prompt
     const prompt = buildClaudePrompt(taskFile, rawTaskFile);
+    // 6. Write prestart artifacts BEFORE launching Claude
+    const artifactDir = writePrestartArtifacts({
+        artifactRoot: session.artifact_root,
+        taskFile,
+        rawTaskFile,
+        prompt,
+    });
+    log(`artifact dir prepared: ${artifactDir}`);
+    // 7. Dry-run mode
     if (options.dryRun) {
-        return dryRunResult(taskFile, session, prompt);
+        log("dry-run: would launch Claude, exiting");
+        return dryRunResult(taskFile, session, prompt, artifactDir);
     }
-    // 6. Start Claude Code in real project directory
+    // 8. Launch Claude Code in real project directory
+    log(`launching claude (cwd: ${session.project_path}, timeout: ${options.timeoutSec}s)`);
     const startedAt = Date.now();
+    let stdoutChunks = 0;
+    let stderrChunks = 0;
     const running = startClaudeCli({
         projectPath: session.project_path,
         task: prompt,
         timeoutSec: options.timeoutSec,
+        onStdout(_chunk) {
+            stdoutChunks++;
+            if (stdoutChunks === 1)
+                log("claude stdout started");
+        },
+        onStderr(_chunk) {
+            stderrChunks++;
+            if (stderrChunks === 1)
+                log("claude stderr started");
+        },
     });
-    // 7. Wait for Claude to finish
+    // 9. Wait for Claude to finish
     const result = await running.finished;
     const durationMs = Date.now() - startedAt;
-    // 8. Write artifacts
-    const artifactDir = writeArtifacts({
+    log(`claude ${result.status} (exit: ${result.exitCode}, duration: ${durationMs}ms, stdout_chunks: ${stdoutChunks}, stderr_chunks: ${stderrChunks})`);
+    // 10. Write result artifacts
+    const delegateResult = writeResultArtifacts({
         artifactRoot: session.artifact_root,
         taskFile,
         rawTaskFile,
@@ -47,25 +77,13 @@ export async function runDelegate(options) {
         status: result.status,
         exitCode: result.exitCode,
         durationMs,
-        changedFiles: [],
     });
-    // 9. Return compact result
-    return {
-        task_id: taskFile.task_id,
-        worker_type: taskFile.worker_type,
-        status: result.status,
-        exit_code: result.exitCode,
-        duration_ms: durationMs,
-        artifact_dir: artifactDir,
-        changed_files: [],
-        summary: result.stdout.slice(0, 2000).trim(),
-        error: result.error,
-    };
+    log(`delegate complete: ${delegateResult.status}`);
+    return delegateResult;
 }
 // ── Prompt construction ──
 function buildClaudePrompt(taskFile, rawTaskFile) {
-    const mode = taskFile.worker_type;
-    const header = mode === "readonly"
+    const header = taskFile.worker_type === "readonly"
         ? [
             "You are Claude Code executing a delegated codex_lead_cc task.",
             "",
@@ -98,7 +116,7 @@ function buildClaudePrompt(taskFile, rawTaskFile) {
         ];
     return [...header, "", "---", "", rawTaskFile].join("\n");
 }
-// ── CLI entry (called from src/index.ts or standalone) ──
+// ── CLI entry ──
 export async function delegateMain(rawArgs) {
     let taskFile;
     let sessionFile;
@@ -150,6 +168,7 @@ export async function delegateMain(rawArgs) {
             throw new Error("--session-file is required.");
     }
     const result = await runDelegate({ taskFile, sessionFile, timeoutSec, dryRun });
+    // stdout: ONLY the compact JSON result
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 function delegateHelp() {
@@ -158,18 +177,22 @@ function delegateHelp() {
 Usage:
   codex_lead_cc delegate --task-file <path> --session-file <path> [--timeout-sec 300] [--dry-run]
 
-This command must be invoked from a Codex subagent shell (CODEX_CLAUDE_CHILD_THREAD=1).
+This command must be invoked with CODEX_CLAUDE_CHILD_THREAD=1.
 `;
 }
-// ── Helpers ──
-function dryRunResult(taskFile, session, prompt) {
+// ── Progress logging (stderr only, never stdout) ──
+function log(message) {
+    process.stderr.write(`[delegate] ${message}\n`);
+}
+// ── Dry run ──
+function dryRunResult(taskFile, session, prompt, artifactDir) {
     return {
         task_id: taskFile.task_id,
         worker_type: taskFile.worker_type,
         status: "completed",
         exit_code: 0,
         duration_ms: 0,
-        artifact_dir: `${session.artifact_root}/${taskFile.task_id}`,
+        artifact_dir: artifactDir,
         changed_files: [],
         summary: `[dry-run] Would execute Claude Code in: ${session.project_path}\n\nPrompt preview (first 500 chars):\n${prompt.slice(0, 500)}`,
     };

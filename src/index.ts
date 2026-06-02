@@ -25,7 +25,10 @@ if (args[0] === "delegate") {
   // All other commands → CLI wrapper
   const child = spawnSync(process.execPath, [cliEntry, ...args], {
     stdio: "inherit",
-    env: process.env,
+    env: {
+      ...process.env,
+      CODEX_LEAD_CC_BIN: process.argv[1],
+    },
   });
   if (child.status !== 0) process.exitCode = child.status ?? 1;
 }

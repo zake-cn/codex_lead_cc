@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -26,92 +26,92 @@ import type { SessionFile } from "../types.js";
 const wrapperDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(wrapperDir, "..", "..");
 
-const DEFAULT_AGENTS_MD = `# codex_lead_cc Supervisor Rules
+// ── Default CLAUDE.md (written to supervisor_home on first launch) ──
 
-You are Codex Lead in codex_lead_cc.
+const DEFAULT_CLAUDE_MD = [
+  "# codex_lead_cc Supervisor Rules",
+  "",
+  "You are Codex Lead. Your cwd is supervisor_home.",
+  "You must NOT read, write, or run commands inside the real project directory.",
+  "Only Claude Code (launched via codex_lead_cc delegate) may touch the project.",
+  "",
+  "## Environment",
+  "",
+  "- CODEX_LEAD_CC_TASK_DIR — absolute path where TaskFiles are written",
+  "- CODEX_LEAD_CC_SESSION_FILE — absolute path to session.json",
+  "- CODEX_LEAD_CC_BIN — absolute path to codex_lead_cc binary",
+  "- CODEX_LEAD_CC_ARTIFACT_ROOT — artifact output root",
+  "",
+  "## How to delegate work",
+  "",
+  "### Step 1 — Write a TaskFile",
+  "",
+  'Use Bash to write the TaskFile to $CODEX_LEAD_CC_TASK_DIR/task_NNN.md.',
+  "Choose a unique task_NNN (e.g. task_001, task_002).",
+  "",
+  "```bash",
+  "cat > \"$CODEX_LEAD_CC_TASK_DIR/task_NNN.md\" << 'TASKEOF'",
+  "# codex_lead_cc Task",
+  "",
+  "TaskId: task_NNN",
+  "WorkerType: readonly",
+  "",
+  "## Goal",
+  "(describe what to do)",
+  "",
+  "## Allowed Scope",
+  "- README*",
+  "- package.json",
+  "- src/**",
+  "",
+  "## Forbidden Actions",
+  "- Do not modify files",
+  "- Do not delete files",
+  "- Do not run destructive commands",
+  "",
+  "## Acceptance Criteria",
+  "- (how to judge success)",
+  "",
+  "## Verification",
+  "- (how to verify the result)",
+  "",
+  "## Report Requirements",
+  "Status",
+  "Summary",
+  "Changed Files",
+  "Verification",
+  "Findings",
+  "Final Result",
+  "Risks Or Follow-ups",
+  "TASKEOF",
+  "```",
+  "",
+  'WorkerType must be "readonly" (inspect only) or "write" (may modify within Allowed Scope).',
+  "",
+  "### Step 2 — Execute the delegate",
+  "",
+  "Use Bash to run exactly ONE command-line. Replace $TASK_FILE with the ACTUAL absolute path.",
+  "Do NOT use the literal string <TASK_FILE>.",
+  "Do NOT export CODEX_CLAUDE_CHILD_THREAD on a separate line.",
+  "The env var must be an inline prefix on the same command.",
+  "",
+  "```bash",
+  'CODEX_CLAUDE_CHILD_THREAD=1 "$CODEX_LEAD_CC_BIN" delegate --task-file "$TASK_FILE" --session-file "$CODEX_LEAD_CC_SESSION_FILE" --timeout-sec 120',
+  "```",
+  "",
+  "The delegate writes progress to stderr and a single JSON result to stdout.",
+  "Read the JSON from stdout to decide the next step.",
+  "Do NOT analyze, inspect, or read the project yourself.",
+  "",
+  "### Step 3 — Decide next action",
+  "",
+  'Read the "status" field from the JSON result:',
+  '- "completed" — review the summary, create next task if needed',
+  '- "failed" — check artifact dir for claude_stderr.log, decide retry or report',
+  '- "timeout" — may retry with a longer --timeout-sec value',
+].join("\n");
 
-You run inside supervisor_home. The real project path is only reachable through session files stored in CODEX_LEAD_CC_SESSION_FILE.
-
-You must not read, inspect, modify, or run commands inside the real project directory.
-
-You must not call claude directly.
-
-You must not call codex_lead_cc delegate directly in the main thread.
-
-When work needs project contact:
-
-1. Create a TaskFile under CODEX_LEAD_CC_TASK_DIR with a unique task ID.
-2. Write it as \`<task_id>.md\` following the TaskFile format.
-3. Spawn a Codex subagent.
-
-The subagent is only a cc_delegate shell. Give the subagent this exact instruction:
-
----
-
-You are cc_delegate, a thin Codex subagent shell.
-
-Do not inspect project files.
-Do not analyze the repository yourself.
-Do not modify files yourself.
-Do not run project commands yourself.
-Do not call claude directly.
-
-Your only job is to invoke codex_lead_cc delegate for the provided TaskFile and return its compact result.
-
-Run:
-
-  export CODEX_CLAUDE_CHILD_THREAD=1
-  codex_lead_cc delegate --task-file "<TASK_FILE>" --session-file "$CODEX_LEAD_CC_SESSION_FILE"
-
-After the command completes, return:
-- delegate status
-- summary
-- changed files
-- verification result
-- artifact path
-- any error message
-
-Do not add unrelated analysis.
-
----
-
-TaskFile format:
-
-\`\`\`markdown
-# codex_lead_cc Task
-
-TaskId: task_001
-WorkerType: readonly
-
-## Goal
-...
-
-## Allowed Scope
-...
-
-## Forbidden Actions
-...
-
-## Acceptance Criteria
-...
-
-## Verification
-...
-
-## Report Requirements
-Status
-Summary
-Changed Files
-Verification
-Findings
-Final Result
-Risks Or Follow-ups
-\`\`\`
-
-WorkerType must be "readonly" or "write".
-- readonly = Claude may inspect and analyze but not modify files.
-- write = Claude may modify files within Allowed Scope.
-`;
+// ── main ──
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
@@ -125,7 +125,6 @@ async function main(): Promise<void> {
     return;
   }
   if (rawArgs[0] === "delegate") {
-    // delegate is handled by src/index.ts; if reached here, forward
     const { delegateMain } = await import("../delegate/delegate_runner.js");
     await delegateMain(rawArgs.slice(1));
     return;
@@ -140,8 +139,8 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Ensure AGENTS.md exists in supervisor_home
-  ensureAgentsMd(userConfig.supervisor_home);
+  // Ensure CLAUDE.md exists in supervisor_home (Codex auto-loads this)
+  ensureClaudeMd(userConfig.supervisor_home);
 
   // Generate session
   const session = createSession(userConfig);
@@ -153,20 +152,18 @@ async function main(): Promise<void> {
     config: userConfig.claude_runtime,
   });
 
-  // Write session file with claude_env_file path
+  // Write session file
   writeFileSync(
     session.filePath,
     JSON.stringify(
-      {
-        ...session.data,
-        claude_env_file: claudeEnv.env_file,
-      },
+      { ...session.data, claude_env_file: claudeEnv.env_file },
       null, 2,
     ) + "\n",
     "utf8",
   );
 
-  // Build Codex env — pass session info, NOT project_path directly
+  // Build Codex env
+  const codexLeadBin = process.argv[1] || path.join(wrapperDir, "codex_lead_cc.js");
   const codexEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
     PWD: userConfig.supervisor_home,
@@ -175,11 +172,11 @@ async function main(): Promise<void> {
     CODEX_LEAD_CC_TASK_DIR: session.data.task_dir,
     CODEX_LEAD_CC_ARTIFACT_ROOT: session.data.artifact_root,
     CODEX_LEAD_CC_SUPERVISOR_HOME: userConfig.supervisor_home,
+    CODEX_LEAD_CC_BIN: codexLeadBin,
   };
 
   assertReadyToLaunch(userConfig);
 
-  // User prompt IS the first Codex message (no prepended supervisor text)
   const child = spawn("codex", options.codexArgs, {
     cwd: userConfig.supervisor_home,
     env: codexEnv,
@@ -187,15 +184,12 @@ async function main(): Promise<void> {
   });
 
   child.on("exit", (code, signal) => {
-    if (signal) {
-      process.kill(process.pid, signal);
-      return;
-    }
+    if (signal) { process.kill(process.pid, signal); return; }
     process.exitCode = code ?? 1;
   });
 }
 
-// ── Session file generation ──
+// ── Session ──
 
 interface SessionInfo {
   sessionId: string;
@@ -209,10 +203,8 @@ function createSession(userConfig: EffectiveCodexLeadUserConfig): SessionInfo {
   const sessionDir = path.join(userConfig.runtime_home, "sessions", sessionId);
   const taskDir = path.join(sessionDir, "tasks");
   const artifactRoot = path.join(sessionDir, "artifacts");
-
   mkdirSync(taskDir, { recursive: true });
   mkdirSync(artifactRoot, { recursive: true });
-
   return {
     sessionId,
     filePath: path.join(sessionDir, "session.json"),
@@ -232,45 +224,30 @@ function createSession(userConfig: EffectiveCodexLeadUserConfig): SessionInfo {
 function parseArgs(args: string[]): { doctor: boolean; codexArgs: string[] } {
   let doctor = false;
   const codexArgs: string[] = [];
-
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === "--help" || arg === "-h") {
-      printHelp();
-      process.exit(0);
-    }
-    if (arg === "--doctor") {
-      doctor = true;
-      continue;
-    }
+  for (const arg of args) {
+    if (arg === "--help" || arg === "-h") { printHelp(); process.exit(0); }
+    if (arg === "--doctor") { doctor = true; continue; }
     codexArgs.push(arg);
   }
-
   return { doctor, codexArgs };
 }
 
-// ── AGENTS.md ──
+// ── CLAUDE.md ──
 
-function ensureAgentsMd(supervisorHome: string): void {
-  const agentsPath = path.join(supervisorHome, "AGENTS.md");
-  if (!existsSync(agentsPath)) {
+function ensureClaudeMd(supervisorHome: string): void {
+  const claudeMdPath = path.join(supervisorHome, "CLAUDE.md");
+  if (!existsSync(claudeMdPath)) {
     mkdirSync(supervisorHome, { recursive: true });
-    writeFileSync(agentsPath, DEFAULT_AGENTS_MD, "utf8");
+    writeFileSync(claudeMdPath, DEFAULT_CLAUDE_MD, "utf8");
   }
 }
 
 // ── Readiness ──
 
 function assertReadyToLaunch(userConfig: EffectiveCodexLeadUserConfig): void {
-  const codex = checkCommand("codex");
-  if (!codex.ok) {
-    throw new Error("codex command is not available on PATH.");
-  }
-  const claude = checkRuntimeCommand(userConfig.claude_runtime.command);
-  if (!claude.ok) {
-    process.stderr.write(
-      `Warning: Claude runtime "${userConfig.claude_runtime.command}" is not available.\n`,
-    );
+  if (!checkCommand("codex").ok) throw new Error("codex command is not available on PATH.");
+  if (!checkRuntimeCommand(userConfig.claude_runtime.command).ok) {
+    process.stderr.write(`Warning: Claude runtime "${userConfig.claude_runtime.command}" is not available.\n`);
   }
 }
 
@@ -278,73 +255,59 @@ function assertReadyToLaunch(userConfig: EffectiveCodexLeadUserConfig): void {
 
 function printDoctor(userConfig: EffectiveCodexLeadUserConfig): void {
   const installSource = detectInstallSource(repoRoot);
-
-  // Test env bridge
   let envBridgeOk = false;
   try {
-    const sessionId = `doctor_${randomUUID().slice(0, 8)}`;
-    const result = prepareClaudeRuntimeEnvFile({
-      runtimeHome: userConfig.runtime_home,
-      sessionId,
-      config: userConfig.claude_runtime,
-    });
-    envBridgeOk = Boolean(result.env_file && existsSync(result.env_file));
-  } catch {
-    // env bridge generation failed
-  }
-
+    const sid = `doctor_${randomUUID().slice(0, 8)}`;
+    const r = prepareClaudeRuntimeEnvFile({ runtimeHome: userConfig.runtime_home, sessionId: sid, config: userConfig.claude_runtime });
+    envBridgeOk = Boolean(r.env_file && existsSync(r.env_file));
+  } catch { /* ignore */ }
   const checks = [
     { name: "node_version", ok: Number(process.versions.node.split(".")[0]) >= 20, detail: process.version },
-    checkCommand("npm"),
-    checkCommand("codex"),
-    checkCommand("git"),
+    checkCommand("npm"), checkCommand("codex"), checkCommand("git"),
     checkRuntimeCommand(userConfig.claude_runtime.command),
     { name: "supervisor_home", ok: existsSync(userConfig.supervisor_home), detail: userConfig.supervisor_home },
     { name: "runtime_home", ok: existsSync(userConfig.runtime_home), detail: userConfig.runtime_home },
     { name: "codex_lead_cc_config", ok: existsSync(userConfig.config_path), detail: userConfig.config_path },
-    { name: "agents_md", ok: existsSync(path.join(userConfig.supervisor_home, "AGENTS.md")), detail: path.join(userConfig.supervisor_home, "AGENTS.md") },
+    { name: "claude_md", ok: existsSync(path.join(userConfig.supervisor_home, "CLAUDE.md")), detail: path.join(userConfig.supervisor_home, "CLAUDE.md") },
     { name: "install_source", ok: true, detail: installSource.detail, value: installSource },
     { name: "claude_runtime_command", ok: true, detail: userConfig.claude_runtime.command, value: { command: userConfig.claude_runtime.command, args_prefix: userConfig.claude_runtime.args_prefix } },
-    { name: "env_bridge", ok: envBridgeOk, detail: envBridgeOk ? "claude_env.json generated successfully" : "env bridge generation failed" },
+    { name: "env_bridge", ok: envBridgeOk, detail: envBridgeOk ? "claude_env.json generated" : "env bridge failed" },
   ];
-
   process.stdout.write(`${JSON.stringify({ checks }, null, 2)}\n`);
 }
 
-function checkCommand(command: string): { name: string; ok: boolean; detail: string } {
-  const result = spawnSync("bash", ["-lc", `command -v ${command}`], { encoding: "utf8" });
-  return { name: `${command}_available`, ok: result.status === 0, detail: result.stdout.trim() || result.stderr.trim() || "not found on PATH" };
+function checkCommand(cmd: string): { name: string; ok: boolean; detail: string } {
+  const r = spawnSync("bash", ["-lc", `command -v ${cmd}`], { encoding: "utf8" });
+  return { name: `${cmd}_available`, ok: r.status === 0, detail: r.stdout.trim() || r.stderr.trim() || "not found on PATH" };
 }
 
-function checkRuntimeCommand(command: string): { name: string; ok: boolean; detail: string } {
-  if (command.includes("/")) return { name: "claude_available", ok: existsSync(command), detail: command };
-  const result = spawnSync("bash", ["-lc", `command -v ${shellQuote(command)}`], { encoding: "utf8" });
-  return { name: "claude_available", ok: result.status === 0, detail: result.stdout.trim() || result.stderr.trim() || "not found on PATH" };
+function checkRuntimeCommand(cmd: string): { name: string; ok: boolean; detail: string } {
+  if (cmd.includes("/")) return { name: "claude_available", ok: existsSync(cmd), detail: cmd };
+  const r = spawnSync("bash", ["-lc", `command -v ${shellQuote(cmd)}`], { encoding: "utf8" });
+  return { name: "claude_available", ok: r.status === 0, detail: r.stdout.trim() || r.stderr.trim() || "not found on PATH" };
 }
 
-// ── Config command ──
+// ── Config ──
 
 async function runConfigCommand(args: string[]): Promise<void> {
-  const subcommand = args[0] ?? "show";
-  if (subcommand === "path") { process.stdout.write(`${userConfigPath()}\n`); return; }
-  if (subcommand === "show") {
-    const config = await loadOrCreateUserConfig();
-    await ensureUserConfigDirectories(config);
-    process.stdout.write(`${JSON.stringify(redactConfigForDisplay(config), null, 2)}\n`);
+  const sub = args[0] ?? "show";
+  if (sub === "path") { process.stdout.write(`${userConfigPath()}\n`); return; }
+  if (sub === "show") {
+    const c = await loadOrCreateUserConfig();
+    await ensureUserConfigDirectories(c);
+    process.stdout.write(`${JSON.stringify(redactConfigForDisplay(c), null, 2)}\n`);
     return;
   }
-  if (subcommand === "reset") {
-    const config = await resetUserConfig();
-    await ensureUserConfigDirectories(config);
-    process.stdout.write(`${JSON.stringify(redactConfigForDisplay(config), null, 2)}\n`);
+  if (sub === "reset") {
+    const c = await resetUserConfig();
+    await ensureUserConfigDirectories(c);
+    process.stdout.write(`${JSON.stringify(redactConfigForDisplay(c), null, 2)}\n`);
     return;
   }
   throw new Error("config requires one of: show, reset, path.");
 }
 
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, "'\\''")}'`;
-}
+function shellQuote(v: string): string { return `'${v.replace(/'/g, "'\\''")}'`; }
 
 function printHelp(): void {
   process.stdout.write(`codex_lead_cc — Codex Lead Supervisor Launcher
@@ -356,13 +319,11 @@ Usage:
   codex_lead_cc config show | reset | path
 
 The wrapper starts Codex from supervisor_home.
-Supervisor behavior is loaded from AGENTS.md in supervisor_home.
-Session info is passed via CODEX_LEAD_CC_SESSION_FILE env var.
+Supervisor behavior is loaded from CLAUDE.md in supervisor_home.
 `);
 }
 
 main().catch((error) => {
-  const message = error instanceof Error ? error.message : String(error);
-  process.stderr.write(`${message}\n`);
+  process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
   process.exitCode = 1;
 });

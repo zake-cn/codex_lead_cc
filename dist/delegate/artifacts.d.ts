@@ -1,4 +1,10 @@
 import type { DelegateResult, ParsedTaskFile } from "../types.js";
+export declare function writePrestartArtifacts(args: {
+    artifactRoot: string;
+    taskFile: ParsedTaskFile;
+    rawTaskFile: string;
+    prompt: string;
+}): string;
 export interface ArtifactInput {
     artifactRoot: string;
     taskFile: ParsedTaskFile;
@@ -10,6 +16,5 @@ export interface ArtifactInput {
     status: DelegateResult["status"];
     exitCode: number | null;
     durationMs: number;
-    changedFiles: string[];
 }
-export declare function writeArtifacts(input: ArtifactInput): string;
+export declare function writeResultArtifacts(input: ArtifactInput): DelegateResult;
