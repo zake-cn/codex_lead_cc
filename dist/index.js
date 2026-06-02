@@ -3,7 +3,9 @@
  * codex_lead_cc — Codex Lead Supervisor Launcher
  *
  *   codex_lead_cc [codex args...]     Start supervisor session
- *   codex_lead_cc delegate ...        Execute delegated task (subagent only)
+ *   codex_lead_cc delegate ...        Execute delegated task (manual debug)
+ *   codex_lead_cc submit ...          Submit delegated task to local daemon
+ *   codex_lead_cc daemon ...          Run local delegate daemon
  *   codex_lead_cc --doctor            Environment diagnostics
  *   codex_lead_cc update [...]        Self-update
  *   codex_lead_cc config <action>     Manage user config
@@ -18,6 +20,14 @@ if (args[0] === "delegate") {
     // Handle delegate inline (no subprocess overhead)
     const { delegateMain } = await import("./delegate/delegate_runner.js");
     await delegateMain(args.slice(1));
+}
+else if (args[0] === "submit") {
+    const { submitMain } = await import("./daemon/delegate_daemon.js");
+    await submitMain(args.slice(1));
+}
+else if (args[0] === "daemon") {
+    const { daemonMain } = await import("./daemon/delegate_daemon.js");
+    await daemonMain(args.slice(1));
 }
 else {
     // All other commands → CLI wrapper

@@ -7,7 +7,8 @@ It is not an MCP orchestrator. It is a thin delegation layer: Codex plans and di
 ```
 Codex Lead (supervisor_home)
   → Codex SubAgent (cc_delegate shell)
-  → codex_lead_cc delegate
+  → codex_lead_cc submit
+  → local delegate daemon
   → Claude Code CLI (real project directory)
 ```
 
@@ -38,13 +39,14 @@ codex_lead_cc update                   # Self-update
 
 ## How It Works
 
-1. `codex_lead_cc` starts Codex from `~/.codex_lead_cc/supervisor/` (supervisor home).
-2. Codex runs with `AGENTS.md` rules — it never touches the real project directory.
+1. `codex_lead_cc` captures the terminal env, creates a session, and starts a local delegate daemon.
+2. `codex_lead_cc` starts Codex from `~/.codex_lead_cc/supervisor/` (supervisor home).
 3. When work is needed, Codex creates a TaskFile and spawns a subagent.
-4. The subagent runs `codex_lead_cc delegate --task-file ... --session-file ...`.
-5. `delegate` launches Claude Code in the **real project directory** with the TaskFile.
-6. Claude Code does the work and produces artifacts.
-7. Results flow back to Codex Lead for approval and next steps.
+4. The subagent runs `codex_lead_cc submit --task-file ... --session-file ...`.
+5. `submit` writes a session-local queue request and waits for a compact JSON result.
+6. The daemon launches Claude Code in the **real project directory** with the TaskFile.
+7. Claude Code does the work and produces artifacts.
+8. Results flow back to Codex Lead for approval and next steps.
 
 ## Requirements
 
@@ -87,6 +89,8 @@ src/
 │   ├── task_file.ts               # TaskFile parser & validator
 │   ├── session.ts                 # Session file reader
 │   └── artifacts.ts               # Artifact writer
+├── daemon/
+│   └── delegate_daemon.ts         # Local file-queue daemon + submit client
 └── config/
     └── user_config.ts             # User configuration
 ```

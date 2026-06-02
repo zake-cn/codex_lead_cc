@@ -157,8 +157,7 @@ export function loadClaudeRuntimeEnvFileIntoProcess(envFile = process.env[CODEX_
 }
 // ── Build final Claude env ──
 export function buildFinalClaudeEnv(args) {
-    const merged = { ...args.baseEnv, ...args.loadedEnv };
-    return buildClaudeWorkerEnv(merged);
+    return { ...args.baseEnv, ...args.loadedEnv };
 }
 // ── Claude worker env (strips internal runtime keys) ──
 export function buildClaudeWorkerEnv(baseEnv = process.env) {

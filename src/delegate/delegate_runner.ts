@@ -22,13 +22,7 @@ export interface DelegateOptions {
 }
 
 export async function runDelegate(options: DelegateOptions): Promise<DelegateResult> {
-  // 1. Guard
-  if (process.env.CODEX_CLAUDE_CHILD_THREAD !== "1") {
-    process.stderr.write("delegate must be invoked from a Codex subagent shell (CODEX_CLAUDE_CHILD_THREAD=1).\n");
-    process.exitCode = 1;
-    throw new Error("delegate must be invoked from a Codex subagent shell. Set CODEX_CLAUDE_CHILD_THREAD=1.");
-  }
-
+  // 1. Start
   log("delegate started");
   log(`  task_file: ${options.taskFile}`);
   log(`  session_file: ${options.sessionFile}`);
@@ -188,6 +182,12 @@ function writeEnvDiagnostic(artifactDir: string, info: Record<string, unknown>):
 // ── CLI ──
 
 export async function delegateMain(rawArgs: string[]): Promise<void> {
+  if (process.env.CODEX_CLAUDE_CHILD_THREAD !== "1") {
+    process.stderr.write("delegate must be invoked from a Codex subagent shell (CODEX_CLAUDE_CHILD_THREAD=1).\n");
+    process.exitCode = 1;
+    throw new Error("delegate must be invoked from a Codex subagent shell. Set CODEX_CLAUDE_CHILD_THREAD=1.");
+  }
+
   let taskFile: string | undefined;
   let sessionFile: string | undefined;
   let timeoutSec = 300;

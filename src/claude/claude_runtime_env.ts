@@ -215,8 +215,7 @@ export function buildFinalClaudeEnv(args: {
   baseEnv: NodeJS.ProcessEnv;
   loadedEnv: Record<string, string>;
 }): NodeJS.ProcessEnv {
-  const merged = { ...args.baseEnv, ...args.loadedEnv };
-  return buildClaudeWorkerEnv(merged);
+  return { ...args.baseEnv, ...args.loadedEnv };
 }
 
 // ── Claude worker env (strips internal runtime keys) ──

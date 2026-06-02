@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,7 +36,7 @@ const DEFAULT_CLAUDE_MD = [
   "",
   "You are Codex Lead. Your cwd is supervisor_home.",
   "You must NOT read, write, or run commands inside the real project directory.",
-  "Only Claude Code (launched via codex_lead_cc delegate) may touch the project.",
+  "Only Claude Code (launched by the local codex_lead_cc delegate daemon) may touch the project.",
   "",
   "ALL runtime directories (tasks, artifacts, sessions) are INSIDE supervisor_home.",
   "Do NOT create files under ~/.codex_lead_cc/runtime — that path is no longer used.",
@@ -47,6 +47,8 @@ const DEFAULT_CLAUDE_MD = [
   "- CODEX_LEAD_CC_SESSION_FILE — absolute path to session.json inside supervisor_home",
   "- CODEX_LEAD_CC_BIN — absolute path to the codex_lead_cc binary",
   "- CODEX_LEAD_CC_ARTIFACT_ROOT — artifact output root inside supervisor_home",
+  "- CODEX_LEAD_CC_QUEUE_DIR — daemon request queue inside supervisor_home",
+  "- CODEX_LEAD_CC_RESULT_DIR — daemon result directory inside supervisor_home",
   "",
   "## How to delegate work",
   "",
@@ -93,19 +95,22 @@ const DEFAULT_CLAUDE_MD = [
   "",
   'WorkerType must be "readonly" (inspect only) or "write" (may modify within Allowed Scope).',
   "",
-  "### Step 2 — Execute the delegate",
+  "### Step 2 — Submit the task",
   "",
   "Run exactly ONE command-line. $TASK_FILE and $SESSION_FILE must be ABSOLUTE paths.",
   "Do NOT use literal placeholder strings. Do NOT export on a separate line.",
   "",
   "```bash",
-  'CODEX_CLAUDE_CHILD_THREAD=1 "$CODEX_LEAD_CC_BIN" delegate --task-file "$TASK_FILE" --session-file "$CODEX_LEAD_CC_SESSION_FILE" --timeout-sec 120',
+  'CODEX_CLAUDE_CHILD_THREAD=1 "$CODEX_LEAD_CC_BIN" submit --task-file "$TASK_FILE" --session-file "$CODEX_LEAD_CC_SESSION_FILE" --timeout-sec 120',
   "```",
   "",
-  "The delegate loads claude_env.json internally and passes it to Claude Code.",
+  "The subagent must not run delegate directly.",
+  "The subagent must not launch Claude Code.",
+  "The subagent only submits the task to the local delegate daemon.",
+  "The daemon loads claude_env.json internally and passes it to Claude Code.",
   "You must NOT read, export, or source claude_env.json yourself.",
   "You must NOT print API keys, tokens, or proxy credentials.",
-  "The delegate writes progress to stderr and a JSON result to stdout.",
+  "submit writes only compact JSON to stdout.",
   "Read only stdout JSON to decide next steps. Do NOT analyze the project yourself.",
   "",
   "### Step 3 — Decide next action",
@@ -134,6 +139,16 @@ async function main(): Promise<void> {
     await delegateMain(rawArgs.slice(1));
     return;
   }
+  if (rawArgs[0] === "submit") {
+    const { submitMain } = await import("../daemon/delegate_daemon.js");
+    await submitMain(rawArgs.slice(1));
+    return;
+  }
+  if (rawArgs[0] === "daemon") {
+    const { daemonMain } = await import("../daemon/delegate_daemon.js");
+    await daemonMain(rawArgs.slice(1));
+    return;
+  }
 
   const options = parseArgs(rawArgs);
   const userConfig = await loadOrCreateUserConfig();
@@ -157,16 +172,30 @@ async function main(): Promise<void> {
     config: userConfig.claude_runtime,
   });
 
-  writeFileSync(
-    session.filePath,
-    JSON.stringify(
-      { ...session.data, claude_env_file: claudeEnv.env_file },
-      null, 2,
-    ) + "\n",
-    "utf8",
-  );
+  const sessionData: SessionFile = {
+    ...session.data,
+    claude_env_file: claudeEnv.env_file,
+  };
+  writeSessionFile(session.filePath, sessionData);
 
   const codexLeadBin = process.argv[1] || path.join(wrapperDir, "codex_lead_cc.js");
+
+  assertReadyToLaunch(userConfig);
+
+  const daemon = startDelegateDaemon({
+    sessionFile: session.filePath,
+    sessionDir: session.sessionDir,
+    supervisorHome: userConfig.supervisor_home,
+  });
+  if (daemon.pid) {
+    sessionData.daemon_pid = daemon.pid;
+    writeSessionFile(session.filePath, sessionData);
+  }
+  const daemonReady = await waitForDaemonReady(path.join(session.sessionDir, "daemon.ready"), 3_000);
+  if (!daemonReady) {
+    process.stderr.write(`Warning: delegate daemon was not ready within 3s. See ${daemon.logPath}\n`);
+  }
+
   const codexEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
     PWD: userConfig.supervisor_home,
@@ -174,11 +203,11 @@ async function main(): Promise<void> {
     CODEX_LEAD_CC_SESSION_FILE: session.filePath,
     CODEX_LEAD_CC_TASK_DIR: session.data.task_dir,
     CODEX_LEAD_CC_ARTIFACT_ROOT: session.data.artifact_root,
+    CODEX_LEAD_CC_QUEUE_DIR: session.data.queue_dir,
+    CODEX_LEAD_CC_RESULT_DIR: session.data.result_dir,
     CODEX_LEAD_CC_SUPERVISOR_HOME: userConfig.supervisor_home,
     CODEX_LEAD_CC_BIN: codexLeadBin,
   };
-
-  assertReadyToLaunch(userConfig);
 
   const child = spawn("codex", options.codexArgs, {
     cwd: userConfig.supervisor_home,
@@ -187,6 +216,7 @@ async function main(): Promise<void> {
   });
 
   child.on("exit", (code, signal) => {
+    stopDelegateDaemon(daemon);
     if (signal) { process.kill(process.pid, signal); return; }
     process.exitCode = code ?? 1;
   });
@@ -196,8 +226,9 @@ async function main(): Promise<void> {
 
 interface SessionInfo {
   sessionId: string;
+  sessionDir: string;
   filePath: string;
-  data: Omit<SessionFile, "claude_env_file" | "created_at">;
+  data: Omit<SessionFile, "claude_env_file" | "daemon_pid">;
 }
 
 function createSession(userConfig: EffectiveCodexLeadUserConfig): SessionInfo {
@@ -206,17 +237,24 @@ function createSession(userConfig: EffectiveCodexLeadUserConfig): SessionInfo {
   const sessionDir = path.join(userConfig.runtime_home, "sessions", sessionId);
   const taskDir = path.join(sessionDir, "tasks");
   const artifactRoot = path.join(sessionDir, "artifacts");
+  const queueDir = path.join(sessionDir, "queue");
+  const resultDir = path.join(sessionDir, "results");
 
   // ALL runtime paths MUST be inside supervisor_home
   assertPathInside(sessionDir, userConfig.supervisor_home, "sessionDir");
   assertPathInside(taskDir, userConfig.supervisor_home, "taskDir");
   assertPathInside(artifactRoot, userConfig.supervisor_home, "artifactRoot");
+  assertPathInside(queueDir, userConfig.supervisor_home, "queueDir");
+  assertPathInside(resultDir, userConfig.supervisor_home, "resultDir");
 
   mkdirSync(taskDir, { recursive: true });
   mkdirSync(artifactRoot, { recursive: true });
+  mkdirSync(queueDir, { recursive: true });
+  mkdirSync(resultDir, { recursive: true });
 
   return {
     sessionId,
+    sessionDir,
     filePath: path.join(sessionDir, "session.json"),
     data: {
       version: 1,
@@ -225,8 +263,84 @@ function createSession(userConfig: EffectiveCodexLeadUserConfig): SessionInfo {
       supervisor_home: userConfig.supervisor_home,
       task_dir: taskDir,
       artifact_root: artifactRoot,
+      queue_dir: queueDir,
+      result_dir: resultDir,
+      created_at: new Date().toISOString(),
     },
   };
+}
+
+// ── Delegate daemon ──
+
+interface StartedDaemon {
+  pid: number | undefined;
+  logPath: string;
+  process: ChildProcess;
+}
+
+function startDelegateDaemon(args: {
+  sessionFile: string;
+  sessionDir: string;
+  supervisorHome: string;
+}): StartedDaemon {
+  const logPath = path.join(args.sessionDir, "daemon.log");
+  const logFd = openSync(logPath, "a");
+  const daemonEntry = path.resolve(wrapperDir, "..", "daemon", "delegate_daemon.js");
+  const daemonArgs = existsSync(daemonEntry)
+    ? [daemonEntry, "--session-file", args.sessionFile]
+    : [fileURLToPath(import.meta.url), "daemon", "--session-file", args.sessionFile];
+
+  const child = spawn(process.execPath, daemonArgs, {
+    cwd: args.supervisorHome,
+    env: {
+      ...process.env,
+      CODEX_LEAD_CC_PARENT_PID: String(process.pid),
+    },
+    stdio: ["ignore", logFd, logFd],
+    detached: false,
+  });
+  closeSync(logFd);
+
+  child.on("error", (error) => {
+    process.stderr.write(`Warning: failed to start delegate daemon: ${error.message}\n`);
+  });
+
+  return { pid: child.pid, logPath, process: child };
+}
+
+async function waitForDaemonReady(readyFile: string, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (existsSync(readyFile)) return true;
+    await sleep(100);
+  }
+  return existsSync(readyFile);
+}
+
+function stopDelegateDaemon(daemon: StartedDaemon): void {
+  if (!daemon.pid || !isProcessAlive(daemon.pid)) return;
+  try {
+    daemon.process.kill("SIGTERM");
+  } catch {
+    // The daemon also monitors the wrapper pid and will self-exit.
+  }
+}
+
+function writeSessionFile(sessionFile: string, session: SessionFile): void {
+  writeFileSync(sessionFile, JSON.stringify(session, null, 2) + "\n", "utf8");
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ── CLI ──
@@ -246,6 +360,12 @@ function ensureClaudeMd(supervisorHome: string): void {
   const p = path.join(supervisorHome, "CLAUDE.md");
   if (!existsSync(p)) {
     mkdirSync(supervisorHome, { recursive: true });
+    writeFileSync(p, DEFAULT_CLAUDE_MD, "utf8");
+    return;
+  }
+
+  const existing = readFileSync(p, "utf8");
+  if (existing.startsWith("# codex_lead_cc Supervisor Rules")) {
     writeFileSync(p, DEFAULT_CLAUDE_MD, "utf8");
   }
 }
@@ -341,7 +461,9 @@ function printHelp(): void {
 
 Usage:
   codex_lead_cc [--doctor] [codex args...]
-  codex_lead_cc delegate --task-file <path> --session-file <path>
+  codex_lead_cc submit --task-file <path> --session-file <path>
+  codex_lead_cc delegate --task-file <path> --session-file <path>  # manual debug
+  codex_lead_cc daemon --session-file <path>
   codex_lead_cc update [--from <git-url>] [--dry-run]
   codex_lead_cc config show | reset | path
 

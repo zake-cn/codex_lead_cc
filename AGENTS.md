@@ -6,10 +6,16 @@
 ## Architecture
 
 ```
-Codex Lead (cwd = supervisor_home, reads CLAUDE.md)
+codex_lead_cc wrapper
+  → captures terminal env
+  → creates session
+  → starts local delegate daemon
+  → starts Codex Lead (cwd = supervisor_home, reads CLAUDE.md)
+Codex Lead
   → Bash: write TaskFile into $CODEX_LEAD_CC_TASK_DIR
-  → Bash: CODEX_CLAUDE_CHILD_THREAD=1 codex_lead_cc delegate
-  → Delegate spawns Claude Code (cwd = real project)
+  → Bash: CODEX_CLAUDE_CHILD_THREAD=1 codex_lead_cc submit
+  → submit writes queue request and waits for result
+  → Delegate daemon spawns Claude Code (cwd = real project)
   → JSON result → next step
 ```
 
@@ -17,19 +23,22 @@ ALL runtime files (sessions, tasks, artifacts, env files) live inside
 supervisor_home under `.codex_lead_cc_runtime/`. Nothing is written outside
 supervisor_home by Codex or subagents.
 
-## Delegate command
+## Submit command
 
 MUST be ONE line with inline env var:
 
 ```bash
-CODEX_CLAUDE_CHILD_THREAD=1 codex_lead_cc delegate \
+CODEX_CLAUDE_CHILD_THREAD=1 codex_lead_cc submit \
   --task-file "/absolute/path/in/supervisor_home/task.md" \
   --session-file "/absolute/path/in/supervisor_home/session.json" \
   --timeout-sec 120
 ```
 
 - Use ABSOLUTE paths only. Never literal placeholders.
-- Progress → stderr. JSON result → stdout.
+- The subagent must not run `delegate` directly.
+- The subagent must not launch Claude Code.
+- The subagent only submits the task to the local delegate daemon.
+- JSON result → stdout.
 
 ## TaskFile format
 

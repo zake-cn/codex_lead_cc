@@ -39,7 +39,10 @@ export interface SessionFile {
   supervisor_home: string;
   task_dir: string;
   artifact_root: string;
+  queue_dir: string;
+  result_dir: string;
   claude_env_file: string;
+  daemon_pid?: number;
   created_at: string;
 }
 
