@@ -1,19 +1,100 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { CODEX_LEAD_CC_ENV_FILE, prepareClaudeRuntimeEnvFile, redactConfigForDisplay, } from "../claude/claude_runtime_env.js";
+import { prepareClaudeRuntimeEnvFile, redactConfigForDisplay, } from "../claude/claude_runtime_env.js";
 import { ensureUserConfigDirectories, loadOrCreateUserConfig, resetUserConfig, userConfigPath, } from "../config/user_config.js";
-import { normalizeMcpExposure } from "../mcp/exposure.js";
-import { registerProjectSession } from "../orchestrator/project_registry.js";
-import { StateStore } from "../orchestrator/state_store.js";
-import { detectInstallSource, parseUpdateArgs, runUpdate } from "./update.js";
+import { detectInstallSource, parseUpdateArgs, runUpdate, } from "./update.js";
 const wrapperDir = path.dirname(fileURLToPath(import.meta.url));
-const distRoot = path.resolve(wrapperDir, "..");
-const repoRoot = path.resolve(distRoot, "..");
-const mcpEntry = path.join(distRoot, "index.js");
-const skillPath = path.join(repoRoot, "codex-plugin", "skills", "codex_lead_cc_supervisor", "SKILL.md");
+const repoRoot = path.resolve(wrapperDir, "..", "..");
+const DEFAULT_AGENTS_MD = `# codex_lead_cc Supervisor Rules
+
+You are Codex Lead in codex_lead_cc.
+
+You run inside supervisor_home. The real project path is only reachable through session files stored in CODEX_LEAD_CC_SESSION_FILE.
+
+You must not read, inspect, modify, or run commands inside the real project directory.
+
+You must not call claude directly.
+
+You must not call codex_lead_cc delegate directly in the main thread.
+
+When work needs project contact:
+
+1. Create a TaskFile under CODEX_LEAD_CC_TASK_DIR with a unique task ID.
+2. Write it as \`<task_id>.md\` following the TaskFile format.
+3. Spawn a Codex subagent.
+
+The subagent is only a cc_delegate shell. Give the subagent this exact instruction:
+
+---
+
+You are cc_delegate, a thin Codex subagent shell.
+
+Do not inspect project files.
+Do not analyze the repository yourself.
+Do not modify files yourself.
+Do not run project commands yourself.
+Do not call claude directly.
+
+Your only job is to invoke codex_lead_cc delegate for the provided TaskFile and return its compact result.
+
+Run:
+
+  export CODEX_CLAUDE_CHILD_THREAD=1
+  codex_lead_cc delegate --task-file "<TASK_FILE>" --session-file "$CODEX_LEAD_CC_SESSION_FILE"
+
+After the command completes, return:
+- delegate status
+- summary
+- changed files
+- verification result
+- artifact path
+- any error message
+
+Do not add unrelated analysis.
+
+---
+
+TaskFile format:
+
+\`\`\`markdown
+# codex_lead_cc Task
+
+TaskId: task_001
+WorkerType: readonly
+
+## Goal
+...
+
+## Allowed Scope
+...
+
+## Forbidden Actions
+...
+
+## Acceptance Criteria
+...
+
+## Verification
+...
+
+## Report Requirements
+Status
+Summary
+Changed Files
+Verification
+Findings
+Final Result
+Risks Or Follow-ups
+\`\`\`
+
+WorkerType must be "readonly" or "write".
+- readonly = Claude may inspect and analyze but not modify files.
+- write = Claude may modify files within Allowed Scope.
+`;
 async function main() {
     const rawArgs = process.argv.slice(2);
     if (rawArgs[0] === "update") {
@@ -24,40 +105,49 @@ async function main() {
         await runConfigCommand(rawArgs.slice(1));
         return;
     }
+    if (rawArgs[0] === "delegate") {
+        // delegate is handled by src/index.ts; if reached here, forward
+        const { delegateMain } = await import("../delegate/delegate_runner.js");
+        await delegateMain(rawArgs.slice(1));
+        return;
+    }
     const options = parseArgs(rawArgs);
     const userConfig = await loadOrCreateUserConfig();
     await ensureUserConfigDirectories(userConfig);
-    const supervisorInstruction = readSupervisorInstruction();
-    const launchSession = options.dryRun || options.doctor || options.printConfig
-        ? previewProjectContext()
-        : await createLaunchSession(userConfig);
-    const claudeRuntimeEnv = options.mode === "off"
-        ? undefined
-        : prepareClaudeRuntimeEnvFile({
-            runtimeHome: userConfig.runtime_home,
-            sessionId: launchSession.session_id,
-            config: userConfig.claude_runtime,
-        });
-    const launch = buildCodexLaunch(options, supervisorInstruction, userConfig, launchSession, claudeRuntimeEnv);
     if (options.doctor) {
-        printDoctor(launch, userConfig, claudeRuntimeEnv);
+        printDoctor(userConfig);
         return;
     }
-    if (options.printConfig) {
-        process.stdout.write(`${launch.configToml}\n`);
-        return;
-    }
-    if (options.dryRun) {
-        process.stdout.write(`${JSON.stringify(launch, null, 2)}\n`);
-        return;
-    }
+    // Ensure AGENTS.md exists in supervisor_home
+    ensureAgentsMd(userConfig.supervisor_home);
+    // Generate session
+    const session = createSession(userConfig);
+    // Prepare Claude runtime env file
+    const claudeEnv = prepareClaudeRuntimeEnvFile({
+        runtimeHome: userConfig.runtime_home,
+        sessionId: session.sessionId,
+        config: userConfig.claude_runtime,
+    });
+    // Write session file with claude_env_file path
+    writeFileSync(session.filePath, JSON.stringify({
+        ...session.data,
+        claude_env_file: claudeEnv.env_file,
+    }, null, 2) + "\n", "utf8");
+    // Build Codex env — pass session info, NOT project_path directly
+    const codexEnv = {
+        ...process.env,
+        PWD: userConfig.supervisor_home,
+        CODEX_LEAD_CC_SESSION_ID: session.sessionId,
+        CODEX_LEAD_CC_SESSION_FILE: session.filePath,
+        CODEX_LEAD_CC_TASK_DIR: session.data.task_dir,
+        CODEX_LEAD_CC_ARTIFACT_ROOT: session.data.artifact_root,
+        CODEX_LEAD_CC_SUPERVISOR_HOME: userConfig.supervisor_home,
+    };
     assertReadyToLaunch(userConfig);
-    const child = spawn("codex", launch.args, {
-        cwd: launch.cwd,
-        env: {
-            ...process.env,
-            PWD: launch.cwd,
-        },
+    // User prompt IS the first Codex message (no prepended supervisor text)
+    const child = spawn("codex", options.codexArgs, {
+        cwd: userConfig.supervisor_home,
+        env: codexEnv,
         stdio: "inherit",
     });
     child.on("exit", (code, signal) => {
@@ -68,336 +158,108 @@ async function main() {
         process.exitCode = code ?? 1;
     });
 }
+function createSession(userConfig) {
+    const sessionId = `session_${randomUUID().slice(0, 8)}`;
+    const projectPath = process.cwd();
+    const sessionDir = path.join(userConfig.runtime_home, "sessions", sessionId);
+    const taskDir = path.join(sessionDir, "tasks");
+    const artifactRoot = path.join(sessionDir, "artifacts");
+    mkdirSync(taskDir, { recursive: true });
+    mkdirSync(artifactRoot, { recursive: true });
+    return {
+        sessionId,
+        filePath: path.join(sessionDir, "session.json"),
+        data: {
+            version: 1,
+            session_id: sessionId,
+            project_path: projectPath,
+            supervisor_home: userConfig.supervisor_home,
+            task_dir: taskDir,
+            artifact_root: artifactRoot,
+        },
+    };
+}
+// ── CLI parsing ──
 function parseArgs(args) {
-    let mode = "supervisor";
-    let explicitExposure;
-    let dryRun = false;
-    let printConfig = false;
     let doctor = false;
-    let verbose = false;
     const codexArgs = [];
     for (let index = 0; index < args.length; index += 1) {
         const arg = args[index];
-        const next = args[index + 1];
-        if (arg === "--") {
-            codexArgs.push(...args.slice(index + 1));
-            break;
-        }
         if (arg === "--help" || arg === "-h") {
             printHelp();
             process.exit(0);
-        }
-        if (arg === "--mode") {
-            if (!next || !["supervisor", "dev", "off"].includes(next)) {
-                throw new Error("--mode requires supervisor, dev, or off.");
-            }
-            mode = next;
-            index += 1;
-            continue;
-        }
-        if (arg === "--mcp-exposure" || arg === "--exposure") {
-            if (!next) {
-                throw new Error(`${arg} requires compact or full.`);
-            }
-            explicitExposure = normalizeMcpExposure(next);
-            index += 1;
-            continue;
-        }
-        if (arg === "--dry-run") {
-            dryRun = true;
-            continue;
-        }
-        if (arg === "--print-config") {
-            printConfig = true;
-            continue;
         }
         if (arg === "--doctor") {
             doctor = true;
             continue;
         }
-        if (arg === "--verbose") {
-            verbose = true;
-            continue;
-        }
         codexArgs.push(arg);
     }
-    return {
-        mode,
-        exposure: explicitExposure,
-        dryRun,
-        printConfig,
-        doctor,
-        verbose,
-        codexArgs,
-    };
+    return { doctor, codexArgs };
 }
-function buildCodexLaunch(options, supervisorInstruction, userConfig, projectContext, claudeRuntimeEnv) {
-    const notes = [
-        "Uses transient `codex -c` overrides and does not edit the default Codex config.",
-        "Codex runs from supervisor_home; Claude Code workers inherit the project through session mapping.",
-    ];
-    const args = [];
-    const exposure = options.exposure ?? (options.mode === "dev" ? "full" : userConfig.default_mcp_exposure);
-    if (options.mode !== "off") {
-        const mcpEnv = {
-            AGENTFOREMAN_HOME: userConfig.runtime_home,
-        };
-        if (projectContext) {
-            mcpEnv.CODEX_LEAD_CC_SESSION_ID = projectContext.session_id;
-            mcpEnv.CODEX_LEAD_CC_PROJECT_ID = projectContext.project_id;
-        }
-        if (claudeRuntimeEnv) {
-            mcpEnv[CODEX_LEAD_CC_ENV_FILE] = claudeRuntimeEnv.env_file;
-        }
-        args.push("-c", `mcp_servers.codex_lead_cc.command=${tomlString(process.execPath)}`, "-c", `mcp_servers.codex_lead_cc.args=${tomlArray([mcpEntry, "mcp", "--exposure", exposure])}`);
-        for (const [key, value] of Object.entries(mcpEnv)) {
-            args.push("-c", `mcp_servers.codex_lead_cc.env.${key}=${tomlString(value)}`);
-        }
+// ── AGENTS.md ──
+function ensureAgentsMd(supervisorHome) {
+    const agentsPath = path.join(supervisorHome, "AGENTS.md");
+    if (!existsSync(agentsPath)) {
+        mkdirSync(supervisorHome, { recursive: true });
+        writeFileSync(agentsPath, DEFAULT_AGENTS_MD, "utf8");
     }
-    args.push(...injectSupervisorInstruction(options, supervisorInstruction));
-    return {
-        command: "codex",
-        args,
-        cwd: userConfig.supervisor_home,
-        mode: options.mode,
-        exposure,
-        mcp_entry: mcpEntry,
-        skill_path: skillPath,
-        supervisor_home: userConfig.supervisor_home,
-        runtime_home: userConfig.runtime_home,
-        project_id: projectContext?.project_id,
-        session_id: projectContext?.session_id,
-        claude_env_file: claudeRuntimeEnv?.env_file,
-        claude_runtime_command: userConfig.claude_runtime.command,
-        claude_env_names: claudeRuntimeEnv?.env_names ?? [],
-        configToml: buildConfigToml(options, userConfig, projectContext, exposure, claudeRuntimeEnv),
-        notes,
-        warnings: claudeRuntimeEnv?.warnings ?? [],
-    };
 }
-function injectSupervisorInstruction(options, supervisorInstruction) {
-    if (options.mode === "off") {
-        return options.codexArgs;
-    }
-    if (options.codexArgs.length === 0) {
-        return [supervisorInstruction];
-    }
-    const first = options.codexArgs[0];
-    if (!first.startsWith("-") && !["exec", "e", "review"].includes(first)) {
-        return [`${supervisorInstruction}\n\nUser request:\n${options.codexArgs.join(" ")}`];
-    }
-    return [
-        ...options.codexArgs,
-        supervisorInstruction,
-    ];
-}
-function buildConfigToml(options, userConfig, projectContext, exposure, claudeRuntimeEnv) {
-    if (options.mode === "off") {
-        return "# mode=off: no codex_lead_cc MCP configuration is generated.";
-    }
-    const lines = [
-        "[mcp_servers.codex_lead_cc]",
-        `command = ${tomlString(process.execPath)}`,
-        `args = ${tomlArray([mcpEntry, "mcp", "--exposure", exposure])}`,
-        "",
-        "[mcp_servers.codex_lead_cc.env]",
-        `AGENTFOREMAN_HOME = ${tomlString(userConfig.runtime_home)}`,
-    ];
-    if (projectContext) {
-        lines.push(`CODEX_LEAD_CC_SESSION_ID = ${tomlString(projectContext.session_id)}`, `CODEX_LEAD_CC_PROJECT_ID = ${tomlString(projectContext.project_id)}`);
-    }
-    if (claudeRuntimeEnv) {
-        lines.push(`${CODEX_LEAD_CC_ENV_FILE} = ${tomlString(claudeRuntimeEnv.env_file)}`);
-    }
-    return lines.join("\n");
-}
-function printDoctor(launch, userConfig, claudeRuntimeEnv) {
-    const checks = readinessChecks(userConfig, claudeRuntimeEnv);
-    process.stdout.write(`${JSON.stringify({ ...launch, checks }, null, 2)}\n`);
-}
+// ── Readiness ──
 function assertReadyToLaunch(userConfig) {
-    const checks = readinessChecks(userConfig);
-    const codex = checks.find((check) => check.name === "codex_available");
-    const mcpEntryBuilt = checks.find((check) => check.name === "mcp_entry_built");
-    if (!codex?.ok) {
+    const codex = checkCommand("codex");
+    if (!codex.ok) {
         throw new Error("codex command is not available on PATH.");
     }
-    if (!mcpEntryBuilt?.ok) {
-        throw new Error(`codex_lead_cc is not built. Run npm run build first. Missing: ${mcpEntry}`);
-    }
-    const claude = checks.find((check) => check.name === "claude_available");
-    if (!claude?.ok) {
-        process.stderr.write("Warning: claude command is not available on PATH. Install or configure Claude Code CLI before assigning real worker tasks.\n");
+    const claude = checkRuntimeCommand(userConfig.claude_runtime.command);
+    if (!claude.ok) {
+        process.stderr.write(`Warning: Claude runtime "${userConfig.claude_runtime.command}" is not available.\n`);
     }
 }
-function readinessChecks(userConfig, claudeRuntimeEnv) {
+// ── Doctor ──
+function printDoctor(userConfig) {
     const installSource = detectInstallSource(repoRoot);
-    const claudeCommand = userConfig?.claude_runtime.command ?? "claude";
-    const claudeArgsPrefix = userConfig?.claude_runtime.args_prefix ?? [];
+    // Test env bridge
+    let envBridgeOk = false;
+    try {
+        const sessionId = `doctor_${randomUUID().slice(0, 8)}`;
+        const result = prepareClaudeRuntimeEnvFile({
+            runtimeHome: userConfig.runtime_home,
+            sessionId,
+            config: userConfig.claude_runtime,
+        });
+        envBridgeOk = Boolean(result.env_file && existsSync(result.env_file));
+    }
+    catch {
+        // env bridge generation failed
+    }
     const checks = [
-        {
-            name: "node_version",
-            ok: Number(process.versions.node.split(".")[0]) >= 20,
-            detail: process.version,
-        },
+        { name: "node_version", ok: Number(process.versions.node.split(".")[0]) >= 20, detail: process.version },
         checkCommand("npm"),
         checkCommand("codex"),
-        checkRuntimeCommand(claudeCommand),
-        checkLaunchable(claudeCommand, [...claudeArgsPrefix, "--help"]),
-        {
-            name: "mcp_entry_built",
-            ok: existsSync(mcpEntry),
-            detail: mcpEntry,
-        },
-        {
-            name: "supervisor_skill",
-            ok: existsSync(skillPath),
-            detail: skillPath,
-        },
-        {
-            name: "config_isolation",
-            ok: true,
-            detail: "wrapper uses transient codex -c overrides and supervisor_home cwd; default Codex config is not edited",
-        },
-        {
-            name: "install_source",
-            ok: true,
-            detail: installSource.detail,
-            value: installSource,
-        },
+        checkCommand("git"),
+        checkRuntimeCommand(userConfig.claude_runtime.command),
+        { name: "supervisor_home", ok: existsSync(userConfig.supervisor_home), detail: userConfig.supervisor_home },
+        { name: "runtime_home", ok: existsSync(userConfig.runtime_home), detail: userConfig.runtime_home },
+        { name: "codex_lead_cc_config", ok: existsSync(userConfig.config_path), detail: userConfig.config_path },
+        { name: "agents_md", ok: existsSync(path.join(userConfig.supervisor_home, "AGENTS.md")), detail: path.join(userConfig.supervisor_home, "AGENTS.md") },
+        { name: "install_source", ok: true, detail: installSource.detail, value: installSource },
+        { name: "claude_runtime_command", ok: true, detail: userConfig.claude_runtime.command, value: { command: userConfig.claude_runtime.command, args_prefix: userConfig.claude_runtime.args_prefix } },
+        { name: "env_bridge", ok: envBridgeOk, detail: envBridgeOk ? "claude_env.json generated successfully" : "env bridge generation failed" },
     ];
-    if (userConfig) {
-        checks.push({
-            name: "codex_lead_cc_config",
-            ok: existsSync(userConfig.config_path),
-            detail: userConfig.config_path,
-        }, {
-            name: "supervisor_home",
-            ok: existsSync(userConfig.supervisor_home),
-            detail: userConfig.supervisor_home,
-        }, {
-            name: "runtime_home",
-            ok: existsSync(userConfig.runtime_home),
-            detail: userConfig.runtime_home,
-        }, {
-            name: "claude_runtime_command",
-            ok: true,
-            detail: userConfig.claude_runtime.command,
-            value: {
-                command: userConfig.claude_runtime.command,
-                args_prefix: userConfig.claude_runtime.args_prefix,
-            },
-        }, {
-            name: "claude_env_passthrough",
-            ok: true,
-            detail: `${userConfig.claude_runtime.env_passthrough.length} allowlisted variable names`,
-            value: {
-                allowlist: userConfig.claude_runtime.env_passthrough,
-                captured_names: claudeRuntimeEnv?.env_names ?? [],
-                captured_redacted: claudeRuntimeEnv?.redacted_env ?? {},
-            },
-        }, {
-            name: "claude_env_file",
-            ok: Boolean(claudeRuntimeEnv?.env_file && existsSync(claudeRuntimeEnv.env_file)),
-            detail: claudeRuntimeEnv?.env_file ?? "not generated",
-        }, {
-            name: "claude_env_provider",
-            ok: (claudeRuntimeEnv?.warnings.length ?? 0) === 0,
-            detail: userConfig.claude_runtime.env_provider.enabled
-                ? "enabled"
-                : "disabled",
-            value: {
-                enabled: userConfig.claude_runtime.env_provider.enabled,
-                command: userConfig.claude_runtime.env_provider.command,
-                args: userConfig.claude_runtime.env_provider.args,
-                warnings: claudeRuntimeEnv?.warnings ?? [],
-            },
-        });
-    }
-    return checks;
+    process.stdout.write(`${JSON.stringify({ checks }, null, 2)}\n`);
 }
 function checkCommand(command) {
-    const result = spawnSync("bash", ["-lc", `command -v ${command}`], {
-        encoding: "utf8",
-    });
-    return {
-        name: `${command}_available`,
-        ok: result.status === 0,
-        detail: result.stdout.trim() || result.stderr.trim() || "not found on PATH",
-    };
+    const result = spawnSync("bash", ["-lc", `command -v ${command}`], { encoding: "utf8" });
+    return { name: `${command}_available`, ok: result.status === 0, detail: result.stdout.trim() || result.stderr.trim() || "not found on PATH" };
 }
 function checkRuntimeCommand(command) {
-    if (command.includes("/")) {
-        return {
-            name: "claude_available",
-            ok: existsSync(command),
-            detail: command,
-        };
-    }
-    const result = spawnSync("bash", ["-lc", `command -v ${shellQuote(command)}`], {
-        encoding: "utf8",
-    });
-    return {
-        name: "claude_available",
-        ok: result.status === 0,
-        detail: result.stdout.trim() || result.stderr.trim() || "not found on PATH",
-    };
+    if (command.includes("/"))
+        return { name: "claude_available", ok: existsSync(command), detail: command };
+    const result = spawnSync("bash", ["-lc", `command -v ${shellQuote(command)}`], { encoding: "utf8" });
+    return { name: "claude_available", ok: result.status === 0, detail: result.stdout.trim() || result.stderr.trim() || "not found on PATH" };
 }
-function checkLaunchable(command, args) {
-    const result = spawnSync(command, args, {
-        encoding: "utf8",
-        timeout: 5_000,
-        stdio: "ignore",
-    });
-    if (result.status === 0) {
-        return {
-            name: "claude_launchable",
-            ok: true,
-            detail: `${command} command is callable`,
-        };
-    }
-    if (result.error) {
-        return {
-            name: "claude_launchable",
-            ok: false,
-            detail: result.error.message,
-        };
-    }
-    return {
-        name: "claude_launchable",
-        ok: false,
-        detail: `${command} exited with code ${result.status ?? "unknown"}`,
-    };
-}
-function readSupervisorInstruction() {
-    if (existsSync(skillPath)) {
-        return readFileSync(skillPath, "utf8").trim();
-    }
-    return [
-        "You are in codex_lead_cc Supervisor Mode.",
-        "Do not directly read source files, run shell commands, or edit project files.",
-        "Use only cc_dispatch, cc_wait, cc_inspect, and cc_decide to manage Claude Code workers.",
-    ].join("\n");
-}
-async function createLaunchSession(userConfig) {
-    const session = await registerProjectSession({
-        store: new StateStore(userConfig.runtime_home),
-        projectPath: process.cwd(),
-        supervisorHome: userConfig.supervisor_home,
-    });
-    return {
-        session_id: session.session_id,
-        project_id: session.project_id,
-        project_path: session.project_path,
-    };
-}
-function previewProjectContext() {
-    return {
-        session_id: "sup_session_preview",
-        project_id: "proj_preview",
-        project_path: "",
-    };
-}
+// ── Config command ──
 async function runConfigCommand(args) {
     const subcommand = args[0] ?? "show";
     if (subcommand === "path") {
@@ -418,31 +280,21 @@ async function runConfigCommand(args) {
     }
     throw new Error("config requires one of: show, reset, path.");
 }
-function tomlString(value) {
-    return JSON.stringify(value);
-}
-function tomlArray(values) {
-    return `[${values.map(tomlString).join(", ")}]`;
-}
 function shellQuote(value) {
     return `'${value.replace(/'/g, "'\\''")}'`;
 }
 function printHelp() {
-    process.stdout.write(`codex_lead_cc Supervisor Mode wrapper
+    process.stdout.write(`codex_lead_cc — Codex Lead Supervisor Launcher
 
 Usage:
-  codex_lead_cc [--mode supervisor|dev|off] [--mcp-exposure compact|full] [--dry-run]
-  codex_lead_cc --doctor
-  codex_lead_cc --print-config
-  codex_lead_cc config show
-  codex_lead_cc config reset
-  codex_lead_cc config path
+  codex_lead_cc [--doctor] [codex args...]
+  codex_lead_cc delegate --task-file <path> --session-file <path>
   codex_lead_cc update [--from <git-url>] [--dry-run]
-  codex_lead_cc -- <codex args>
+  codex_lead_cc config show | reset | path
 
-Default mode is supervisor with compact MCP exposure. The wrapper starts the real
-codex command from supervisor_home with transient config overrides and does not
-edit the default Codex config.
+The wrapper starts Codex from supervisor_home.
+Supervisor behavior is loaded from AGENTS.md in supervisor_home.
+Session info is passed via CODEX_LEAD_CC_SESSION_FILE env var.
 `);
 }
 main().catch((error) => {

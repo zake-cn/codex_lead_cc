@@ -1,1 +1,0 @@
-{"version":3,"file":"cc_create_worker.js","sourceRoot":"","sources":["../../src/tools/cc_create_worker.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,sBAAsB,EAAE,MAAM,mCAAmC,CAAC;AAG3E,MAAM,CAAC,KAAK,UAAU,cAAc,CAAC,KAAwB;IAC3D,OAAO,sBAAsB,EAAE,CAAC,YAAY,CAAC,KAAK,CAAC,CAAC;AACtD,CAAC"}

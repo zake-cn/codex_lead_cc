@@ -7,16 +7,11 @@ import {
   normalizeClaudeRuntimeConfig,
   type ClaudeRuntimeConfig,
 } from "../claude/claude_runtime_env.js";
-import { normalizeMcpExposure, type McpExposure } from "../mcp/exposure.js";
 
 export interface CodexLeadUserConfig {
   version: number;
   supervisor_home: string;
   runtime_home: string;
-  default_mcp_exposure: McpExposure;
-  worker_mode: "caller_directory";
-  max_workers: number;
-  idle_cleanup_minutes: number;
   claude_runtime: ClaudeRuntimeConfig;
 }
 
@@ -24,10 +19,12 @@ export interface EffectiveCodexLeadUserConfig extends CodexLeadUserConfig {
   config_path: string;
 }
 
-const CONFIG_VERSION = 1;
+const CONFIG_VERSION = 2;
 
 export function codexLeadHome(): string {
-  return path.resolve(process.env.CODEX_LEAD_CC_HOME ?? path.join(os.homedir(), ".codex_lead_cc"));
+  return path.resolve(
+    process.env.CODEX_LEAD_CC_HOME ?? path.join(os.homedir(), ".codex_lead_cc"),
+  );
 }
 
 export function userConfigPath(): string {
@@ -38,12 +35,12 @@ export function defaultUserConfig(): CodexLeadUserConfig {
   const homeOverride = process.env.CODEX_LEAD_CC_HOME;
   return {
     version: CONFIG_VERSION,
-    supervisor_home: homeOverride ? path.join(homeOverride, "supervisor") : "~/.codex_lead_cc/supervisor",
-    runtime_home: homeOverride ? path.join(homeOverride, "runtime") : "~/.codex_lead_cc/runtime",
-    default_mcp_exposure: "compact",
-    worker_mode: "caller_directory",
-    max_workers: 8,
-    idle_cleanup_minutes: 30,
+    supervisor_home: homeOverride
+      ? path.join(homeOverride, "supervisor")
+      : path.join(os.homedir(), ".codex_lead_cc", "supervisor"),
+    runtime_home: homeOverride
+      ? path.join(homeOverride, "runtime")
+      : path.join(os.homedir(), ".codex_lead_cc", "runtime"),
     claude_runtime: defaultClaudeRuntimeConfig(),
   };
 }
@@ -78,7 +75,9 @@ export async function resetUserConfig(): Promise<EffectiveCodexLeadUserConfig> {
   return materializeConfig(defaults);
 }
 
-export async function ensureUserConfigDirectories(config: EffectiveCodexLeadUserConfig): Promise<void> {
+export async function ensureUserConfigDirectories(
+  config: EffectiveCodexLeadUserConfig,
+): Promise<void> {
   await Promise.all([
     mkdir(config.supervisor_home, { recursive: true }),
     mkdir(config.runtime_home, { recursive: true }),
@@ -89,12 +88,14 @@ function mergeUserConfig(raw: Partial<CodexLeadUserConfig>): CodexLeadUserConfig
   const defaults = defaultUserConfig();
   return {
     version: CONFIG_VERSION,
-    supervisor_home: normalizePathSetting(raw.supervisor_home, defaults.supervisor_home),
-    runtime_home: normalizePathSetting(raw.runtime_home, defaults.runtime_home),
-    default_mcp_exposure: normalizeMcpExposure(raw.default_mcp_exposure ?? defaults.default_mcp_exposure),
-    worker_mode: raw.worker_mode === "caller_directory" ? raw.worker_mode : defaults.worker_mode,
-    max_workers: positiveInteger(raw.max_workers, defaults.max_workers),
-    idle_cleanup_minutes: positiveInteger(raw.idle_cleanup_minutes, defaults.idle_cleanup_minutes),
+    supervisor_home: normalizePathSetting(
+      raw.supervisor_home,
+      defaults.supervisor_home,
+    ),
+    runtime_home: normalizePathSetting(
+      raw.runtime_home,
+      defaults.runtime_home,
+    ),
     claude_runtime: normalizeClaudeRuntimeConfig(raw.claude_runtime),
   };
 }
@@ -103,7 +104,9 @@ function needsMigration(raw: Partial<CodexLeadUserConfig>): boolean {
   return raw.version !== CONFIG_VERSION || !raw.claude_runtime;
 }
 
-function materializeConfig(config: CodexLeadUserConfig): EffectiveCodexLeadUserConfig {
+function materializeConfig(
+  config: CodexLeadUserConfig,
+): EffectiveCodexLeadUserConfig {
   return {
     ...config,
     supervisor_home: expandHome(config.supervisor_home),
@@ -118,10 +121,6 @@ async function writeUserConfig(config: CodexLeadUserConfig): Promise<void> {
 
 function normalizePathSetting(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
-}
-
-function positiveInteger(value: unknown, fallback: number): number {
-  return Number.isInteger(value) && Number(value) > 0 ? Number(value) : fallback;
 }
 
 function expandHome(value: string): string {
