@@ -3,9 +3,9 @@
  * codex_lead_cc — Codex Lead Supervisor Launcher
  *
  *   codex_lead_cc [codex args...]     Start supervisor session
- *   codex_lead_cc delegate ...        Execute delegated task (manual debug)
- *   codex_lead_cc submit ...          Submit delegated task to local daemon
- *   codex_lead_cc daemon ...          Run local delegate daemon
+ *   codex_lead_cc cc-send ...         Send prompt to the current CC Bridge
+ *   codex_lead_cc cc-input ...        Send key input to the current CC Bridge
+ *   codex_lead_cc cc-status           Read current CC Bridge status
  *   codex_lead_cc --doctor            Environment diagnostics
  *   codex_lead_cc update [...]        Self-update
  *   codex_lead_cc config <action>     Manage user config
@@ -16,18 +16,21 @@ import { fileURLToPath } from "node:url";
 const wrapperDir = path.dirname(fileURLToPath(import.meta.url));
 const cliEntry = path.join(wrapperDir, "cli", "codex_lead_cc.js");
 const args = process.argv.slice(2);
-if (args[0] === "delegate") {
-    // Handle delegate inline (no subprocess overhead)
-    const { delegateMain } = await import("./delegate/delegate_runner.js");
-    await delegateMain(args.slice(1));
+if (args[0] === "cc-send") {
+    const { ccSendMain } = await import("./bridge/cc_client.js");
+    await ccSendMain(args.slice(1));
 }
-else if (args[0] === "submit") {
-    const { submitMain } = await import("./daemon/delegate_daemon.js");
-    await submitMain(args.slice(1));
+else if (args[0] === "cc-input") {
+    const { ccInputMain } = await import("./bridge/cc_client.js");
+    await ccInputMain(args.slice(1));
 }
-else if (args[0] === "daemon") {
-    const { daemonMain } = await import("./daemon/delegate_daemon.js");
-    await daemonMain(args.slice(1));
+else if (args[0] === "cc-status") {
+    const { ccStatusMain } = await import("./bridge/cc_client.js");
+    await ccStatusMain(args.slice(1));
+}
+else if (args[0] === "delegate" || args[0] === "submit" || args[0] === "daemon") {
+    process.stderr.write("Unsupported command. Use only cc-send, cc-input, and cc-status for the CC Bridge.\n");
+    process.exitCode = 1;
 }
 else {
     // All other commands → CLI wrapper

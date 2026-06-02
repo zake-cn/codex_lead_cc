@@ -1,0 +1,78 @@
+const MAX_LINES = 300;
+const MAX_RAW_TAIL = 20_000;
+const ANSI_PATTERN = /[\x1B\x9B][[\]()#;?]*(?:(?:(?:[a-zA-Z\d]*(?:;[a-zA-Z\d]*)*)?\x07)|(?:(?:\d{1,4}(?:;\d{0,4})*)?[\dA-PR-TZcf-nq-uy=><~]))/g;
+export class SimpleAnsiTerminalScreen {
+    lines = [];
+    currentLine = "";
+    rawTail = "";
+    feed(chunk) {
+        this.rawTail = tail(`${this.rawTail}${chunk}`, MAX_RAW_TAIL);
+        if (hasClearScreen(chunk)) {
+            this.clear();
+        }
+        const plain = stripAnsi(chunk);
+        for (const char of plain) {
+            this.feedChar(char);
+        }
+        this.trim();
+    }
+    clear() {
+        this.lines = [];
+        this.currentLine = "";
+    }
+    snapshot() {
+        const visibleLines = [...this.lines, this.currentLine];
+        const lines = visibleLines.slice(-MAX_LINES);
+        return {
+            text: lines.join("\n"),
+            lines,
+            bottom_lines: lines.slice(-10),
+            raw_tail: this.rawTail,
+        };
+    }
+    feedChar(char) {
+        if (char === "\r") {
+            this.currentLine = "";
+            return;
+        }
+        if (char === "\n") {
+            this.lines.push(this.currentLine);
+            this.currentLine = "";
+            return;
+        }
+        if (char === "\b" || char === "\x7f") {
+            this.currentLine = this.currentLine.slice(0, -1);
+            return;
+        }
+        if (char === "\t") {
+            this.currentLine += "  ";
+            return;
+        }
+        if (isPrintable(char)) {
+            this.currentLine += char;
+        }
+    }
+    trim() {
+        if (this.lines.length > MAX_LINES) {
+            this.lines = this.lines.slice(-MAX_LINES);
+        }
+    }
+}
+export function stripAnsi(value) {
+    return value.replace(ANSI_PATTERN, "");
+}
+function hasClearScreen(chunk) {
+    return /\x1Bc|\x1B\[(?:\?1049[hl]|2J|3J|H|1;1H)/.test(chunk);
+}
+function isPrintable(char) {
+    const code = char.codePointAt(0);
+    if (code === undefined)
+        return false;
+    return code >= 32 || code === 10 || code === 13;
+}
+function tail(value, max) {
+    if (value.length <= max)
+        return value;
+    return value.slice(value.length - max);
+}
+//# sourceMappingURL=terminal_screen.js.map

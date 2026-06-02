@@ -1,7 +1,7 @@
 {
   "name": "codex_lead_cc",
   "version": "0.6.0",
-  "description": "Codex Lead — Supervisor launcher and Claude Code worker runtime.",
+  "description": "Codex Lead — Supervisor launcher with a single long-lived Claude Code bridge.",
   "license": "MIT",
   "type": "module",
   "repository": {
@@ -27,7 +27,7 @@
   "keywords": [
     "codex",
     "claude-code",
-    "agent-orchestration",
+    "cc-bridge",
     "supervisor"
   ],
   "devDependencies": {

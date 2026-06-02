@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
+import net from "node:net";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,89 +37,66 @@ const DEFAULT_CLAUDE_MD = [
   "",
   "You are Codex Lead. Your cwd is supervisor_home.",
   "You must NOT read, write, or run commands inside the real project directory.",
-  "Only Claude Code (launched by the local codex_lead_cc delegate daemon) may touch the project.",
+  "Only Claude Code, running in the long-lived local CC Bridge PTY, may touch the project.",
   "",
-  "ALL runtime directories (tasks, artifacts, sessions) are INSIDE supervisor_home.",
+  "ALL runtime files (sessions, artifacts, env files, bridge socket) are INSIDE supervisor_home.",
   "Do NOT create files under ~/.codex_lead_cc/runtime — that path is no longer used.",
   "",
   "## Environment",
   "",
-  "- CODEX_LEAD_CC_TASK_DIR — absolute path inside supervisor_home for TaskFiles",
+  "- CODEX_LEAD_CC_BRIDGE_SOCKET — absolute path to the bridge socket for this Codex conversation",
   "- CODEX_LEAD_CC_SESSION_FILE — absolute path to session.json inside supervisor_home",
+  "- CODEX_LEAD_CC_SESSION_ID — current session id",
   "- CODEX_LEAD_CC_BIN — absolute path to the codex_lead_cc binary",
-  "- CODEX_LEAD_CC_ARTIFACT_ROOT — artifact output root inside supervisor_home",
-  "- CODEX_LEAD_CC_QUEUE_DIR — daemon request queue inside supervisor_home",
-  "- CODEX_LEAD_CC_RESULT_DIR — daemon result directory inside supervisor_home",
   "",
-  "## How to delegate work",
+  "## Allowed Commands",
   "",
-  "### Step 1 — Write a TaskFile",
-  "",
-  "Use Bash. Write the TaskFile to $CODEX_LEAD_CC_TASK_DIR/task_NNN.md",
+  "Use only these bridge commands:",
   "",
   "```bash",
-  "cat > \"$CODEX_LEAD_CC_TASK_DIR/task_NNN.md\" << 'TASKEOF'",
-  "# codex_lead_cc Task",
-  "",
-  "TaskId: task_NNN",
-  "WorkerType: readonly",
-  "",
-  "## Goal",
-  "(describe what to do)",
-  "",
-  "## Allowed Scope",
-  "- README*",
-  "- package.json",
-  "- src/**",
-  "",
-  "## Forbidden Actions",
-  "- Do not modify files",
-  "- Do not delete files",
-  "- Do not run destructive commands",
-  "",
-  "## Acceptance Criteria",
-  "- (how to judge success)",
-  "",
-  "## Verification",
-  "- (how to verify the result)",
-  "",
-  "## Report Requirements",
-  "Status",
-  "Summary",
-  "Changed Files",
-  "Verification",
-  "Findings",
-  "Final Result",
-  "Risks Or Follow-ups",
-  "TASKEOF",
+  'codex_lead_cc cc-send "prompt"',
+  "codex_lead_cc cc-send <<'EOF'",
+  "multi-line prompt",
+  "EOF",
+  "codex_lead_cc cc-input --key 1",
+  "codex_lead_cc cc-status",
   "```",
   "",
-  'WorkerType must be "readonly" (inspect only) or "write" (may modify within Allowed Scope).',
+  "Do NOT use MCP, subagents, delegate, submit, daemon, TaskContract, OperationRequest, worker pools, queues, or multiple Claude Code instances.",
   "",
-  "### Step 2 — Submit the task",
+  "## How to Work",
   "",
-  "Run exactly ONE command-line. $TASK_FILE and $SESSION_FILE must be ABSOLUTE paths.",
-  "Do NOT use literal placeholder strings. Do NOT export on a separate line.",
+  "Send natural-language instructions to Claude Code through cc-send.",
+  "cc-send streams the Claude Code PTY output to stdout and ends only when the bridge reports completed, needs_permission, timeout, interrupted, or exited.",
+  "cc-send ending does NOT mean Claude Code exited. The Claude Code PTY stays alive for the next instruction.",
+  "cc-input sends one key to the same PTY, streams output, and also leaves Claude Code running.",
+  "cc-status only reads bridge state; it must not drive execution.",
   "",
-  "```bash",
-  'CODEX_CLAUDE_CHILD_THREAD=1 "$CODEX_LEAD_CC_BIN" submit --task-file "$TASK_FILE" --session-file "$CODEX_LEAD_CC_SESSION_FILE" --timeout-sec 120',
+  "The bridge completion decision is based on PTY screen state:",
+  "- recent quiet output window",
+  "- no bottom-screen loading/spinner",
+  "- no permission menu",
+  "- optional <<<CODEX_LEAD_CC_DONE>>> marker as an auxiliary signal",
+  "",
+  "Do NOT decide task completion from whether Claude Code is accepting input. Claude Code is usually input-ready even when the task is not done.",
+  "",
+  "## Permission Loop",
+  "",
+  "When cc-send or cc-input prints:",
+  "",
+  "```text",
+  "<<<CODEX_LEAD_CC_STATUS>>>",
+  "{\"status\":\"needs_permission\",\"suggested_keys\":[\"1\",\"2\",\"3\"]}",
+  "<<<CODEX_LEAD_CC_STATUS_END>>>",
   "```",
   "",
-  "The subagent must not run delegate directly.",
-  "The subagent must not launch Claude Code.",
-  "The subagent only submits the task to the local delegate daemon.",
-  "The daemon loads claude_env.json internally and passes it to Claude Code.",
-  "You must NOT read, export, or source claude_env.json yourself.",
-  "You must NOT print API keys, tokens, or proxy credentials.",
-  "submit writes only compact JSON to stdout.",
-  "Read only stdout JSON to decide next steps. Do NOT analyze the project yourself.",
+  "Ask the human which option to grant.",
+  'If the human chooses option 1, run: codex_lead_cc cc-input --key 1',
+  'If the human chooses option 2, record that Codex may handle similar requests automatically, but still run: codex_lead_cc cc-input --key 1',
+  'Only run codex_lead_cc cc-input --key 2 when the human explicitly asks Claude Code itself to stop asking.',
+  'If the human chooses option 3, run: codex_lead_cc cc-input --key 3',
   "",
-  "### Step 3 — Decide next action",
-  "",
-  'Check the "status" field in the JSON:',
-  '- "completed" — review summary, create next task if needed',
-  '- "failed" — check artifact dir for claude_stderr.log',
-  '- "timeout" — retry with longer --timeout-sec',
+  "Human grants reusable policy to Codex. Codex grants one-shot approval to Claude Code.",
 ].join("\n");
 
 // ── main ──
@@ -134,19 +112,31 @@ async function main(): Promise<void> {
     await runConfigCommand(rawArgs.slice(1));
     return;
   }
-  if (rawArgs[0] === "delegate") {
-    const { delegateMain } = await import("../delegate/delegate_runner.js");
-    await delegateMain(rawArgs.slice(1));
+  if (rawArgs[0] === "cc-send") {
+    const { ccSendMain } = await import("../bridge/cc_client.js");
+    await ccSendMain(rawArgs.slice(1));
     return;
   }
-  if (rawArgs[0] === "submit") {
-    const { submitMain } = await import("../daemon/delegate_daemon.js");
-    await submitMain(rawArgs.slice(1));
+  if (rawArgs[0] === "cc-input") {
+    const { ccInputMain } = await import("../bridge/cc_client.js");
+    await ccInputMain(rawArgs.slice(1));
     return;
   }
-  if (rawArgs[0] === "daemon") {
-    const { daemonMain } = await import("../daemon/delegate_daemon.js");
-    await daemonMain(rawArgs.slice(1));
+  if (rawArgs[0] === "cc-status") {
+    const { ccStatusMain } = await import("../bridge/cc_client.js");
+    await ccStatusMain(rawArgs.slice(1));
+    return;
+  }
+  if (rawArgs[0] === "__bridge") {
+    if (process.env.CODEX_LEAD_CC_INTERNAL_BRIDGE !== "1") {
+      throw new Error("Unsupported command. Use only cc-send, cc-input, and cc-status for the CC Bridge.");
+    }
+    const { bridgeMain } = await import("../bridge/cc_bridge.js");
+    await bridgeMain(rawArgs.slice(1));
+    return;
+  }
+  if (rawArgs[0] === "delegate" || rawArgs[0] === "submit" || rawArgs[0] === "daemon") {
+    throw new Error("Unsupported command. Use only cc-send, cc-input, and cc-status for the CC Bridge.");
     return;
   }
 
@@ -182,29 +172,26 @@ async function main(): Promise<void> {
 
   assertReadyToLaunch(userConfig);
 
-  const daemon = startDelegateDaemon({
+  const bridge = startCcBridge({
     sessionFile: session.filePath,
     sessionDir: session.sessionDir,
     supervisorHome: userConfig.supervisor_home,
   });
-  if (daemon.pid) {
-    sessionData.daemon_pid = daemon.pid;
+  if (bridge.pid) {
+    sessionData.bridge_pid = bridge.pid;
     writeSessionFile(session.filePath, sessionData);
   }
-  const daemonReady = await waitForDaemonReady(path.join(session.sessionDir, "daemon.ready"), 3_000);
-  if (!daemonReady) {
-    process.stderr.write(`Warning: delegate daemon was not ready within 3s. See ${daemon.logPath}\n`);
+  const bridgeReady = await waitForBridgeReady(session.data.bridge_socket, 5_000);
+  if (!bridgeReady) {
+    process.stderr.write(`Warning: CC bridge was not ready within 5s. See ${bridge.logPath}\n`);
   }
 
   const codexEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
     PWD: userConfig.supervisor_home,
+    CODEX_LEAD_CC_BRIDGE_SOCKET: session.data.bridge_socket,
     CODEX_LEAD_CC_SESSION_ID: session.sessionId,
     CODEX_LEAD_CC_SESSION_FILE: session.filePath,
-    CODEX_LEAD_CC_TASK_DIR: session.data.task_dir,
-    CODEX_LEAD_CC_ARTIFACT_ROOT: session.data.artifact_root,
-    CODEX_LEAD_CC_QUEUE_DIR: session.data.queue_dir,
-    CODEX_LEAD_CC_RESULT_DIR: session.data.result_dir,
     CODEX_LEAD_CC_SUPERVISOR_HOME: userConfig.supervisor_home,
     CODEX_LEAD_CC_BIN: codexLeadBin,
   };
@@ -216,7 +203,7 @@ async function main(): Promise<void> {
   });
 
   child.on("exit", (code, signal) => {
-    stopDelegateDaemon(daemon);
+    stopCcBridge(bridge);
     if (signal) { process.kill(process.pid, signal); return; }
     process.exitCode = code ?? 1;
   });
@@ -228,7 +215,7 @@ interface SessionInfo {
   sessionId: string;
   sessionDir: string;
   filePath: string;
-  data: Omit<SessionFile, "claude_env_file" | "daemon_pid">;
+  data: Omit<SessionFile, "claude_env_file" | "bridge_pid" | "cc_pid">;
 }
 
 function createSession(userConfig: EffectiveCodexLeadUserConfig): SessionInfo {
@@ -237,20 +224,16 @@ function createSession(userConfig: EffectiveCodexLeadUserConfig): SessionInfo {
   const sessionDir = path.join(userConfig.runtime_home, "sessions", sessionId);
   const taskDir = path.join(sessionDir, "tasks");
   const artifactRoot = path.join(sessionDir, "artifacts");
-  const queueDir = path.join(sessionDir, "queue");
-  const resultDir = path.join(sessionDir, "results");
+  const bridgeSocket = path.join(sessionDir, "cc_bridge.sock");
 
   // ALL runtime paths MUST be inside supervisor_home
   assertPathInside(sessionDir, userConfig.supervisor_home, "sessionDir");
   assertPathInside(taskDir, userConfig.supervisor_home, "taskDir");
   assertPathInside(artifactRoot, userConfig.supervisor_home, "artifactRoot");
-  assertPathInside(queueDir, userConfig.supervisor_home, "queueDir");
-  assertPathInside(resultDir, userConfig.supervisor_home, "resultDir");
+  assertPathInside(bridgeSocket, userConfig.supervisor_home, "bridgeSocket");
 
   mkdirSync(taskDir, { recursive: true });
   mkdirSync(artifactRoot, { recursive: true });
-  mkdirSync(queueDir, { recursive: true });
-  mkdirSync(resultDir, { recursive: true });
 
   return {
     sessionId,
@@ -263,38 +246,38 @@ function createSession(userConfig: EffectiveCodexLeadUserConfig): SessionInfo {
       supervisor_home: userConfig.supervisor_home,
       task_dir: taskDir,
       artifact_root: artifactRoot,
-      queue_dir: queueDir,
-      result_dir: resultDir,
+      bridge_socket: bridgeSocket,
       created_at: new Date().toISOString(),
     },
   };
 }
 
-// ── Delegate daemon ──
+// ── CC Bridge ──
 
-interface StartedDaemon {
+interface StartedBridge {
   pid: number | undefined;
   logPath: string;
   process: ChildProcess;
 }
 
-function startDelegateDaemon(args: {
+function startCcBridge(args: {
   sessionFile: string;
   sessionDir: string;
   supervisorHome: string;
-}): StartedDaemon {
-  const logPath = path.join(args.sessionDir, "daemon.log");
+}): StartedBridge {
+  const logPath = path.join(args.sessionDir, "cc_bridge.log");
   const logFd = openSync(logPath, "a");
-  const daemonEntry = path.resolve(wrapperDir, "..", "daemon", "delegate_daemon.js");
-  const daemonArgs = existsSync(daemonEntry)
-    ? [daemonEntry, "--session-file", args.sessionFile]
-    : [fileURLToPath(import.meta.url), "daemon", "--session-file", args.sessionFile];
+  const bridgeEntry = path.resolve(wrapperDir, "..", "bridge", "cc_bridge.js");
+  const bridgeArgs = existsSync(bridgeEntry)
+    ? [bridgeEntry, "--session-file", args.sessionFile]
+    : [fileURLToPath(import.meta.url), "__bridge", "--session-file", args.sessionFile];
 
-  const child = spawn(process.execPath, daemonArgs, {
+  const child = spawn(process.execPath, bridgeArgs, {
     cwd: args.supervisorHome,
     env: {
       ...process.env,
       CODEX_LEAD_CC_PARENT_PID: String(process.pid),
+      CODEX_LEAD_CC_INTERNAL_BRIDGE: "1",
     },
     stdio: ["ignore", logFd, logFd],
     detached: false,
@@ -302,28 +285,54 @@ function startDelegateDaemon(args: {
   closeSync(logFd);
 
   child.on("error", (error) => {
-    process.stderr.write(`Warning: failed to start delegate daemon: ${error.message}\n`);
+    process.stderr.write(`Warning: failed to start CC bridge: ${error.message}\n`);
   });
 
   return { pid: child.pid, logPath, process: child };
 }
 
-async function waitForDaemonReady(readyFile: string, timeoutMs: number): Promise<boolean> {
+async function waitForBridgeReady(socketPath: string, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (existsSync(readyFile)) return true;
+    if (await canConnect(socketPath)) return true;
     await sleep(100);
   }
-  return existsSync(readyFile);
+  return canConnect(socketPath);
 }
 
-function stopDelegateDaemon(daemon: StartedDaemon): void {
-  if (!daemon.pid || !isProcessAlive(daemon.pid)) return;
+function stopCcBridge(bridge: StartedBridge): void {
+  if (!bridge.pid || !isProcessAlive(bridge.pid)) return;
   try {
-    daemon.process.kill("SIGTERM");
+    bridge.process.kill("SIGTERM");
   } catch {
-    // The daemon also monitors the wrapper pid and will self-exit.
+    // The bridge also monitors the wrapper pid and will self-exit.
   }
+}
+
+function canConnect(socketPath: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (!existsSync(socketPath)) {
+      resolve(false);
+      return;
+    }
+    const client = net.createConnection(socketPath);
+    let buffer = "";
+    const done = (ok: boolean) => {
+      client.removeAllListeners();
+      client.destroy();
+      resolve(ok);
+    };
+    client.setEncoding("utf8");
+    client.once("connect", () => {
+      client.write(`${JSON.stringify({ type: "status" })}\n`);
+    });
+    client.on("data", (chunk: string) => {
+      buffer += chunk;
+      if (buffer.includes("\"type\":\"status\"")) done(true);
+    });
+    client.once("error", () => done(false));
+    client.setTimeout(250, () => done(false));
+  });
 }
 
 function writeSessionFile(sessionFile: string, session: SessionFile): void {
@@ -397,10 +406,11 @@ function printDoctor(userConfig: EffectiveCodexLeadUserConfig): void {
   const checks = [
     { name: "node_version", ok: Number(process.versions.node.split(".")[0]) >= 20, detail: process.version },
     checkCommand("npm"), checkCommand("codex"), checkCommand("git"),
+    checkCommand("script"),
     checkRuntimeCommand(userConfig.claude_runtime.command),
     { name: "supervisor_home", ok: existsSync(userConfig.supervisor_home), detail: userConfig.supervisor_home },
     { name: "runtime_home", ok: existsSync(userConfig.runtime_home), detail: userConfig.runtime_home },
-    { name: "runtime_home_inside_supervisor_home", ok: rtInside, detail: rtInside ? "ok" : `WARNING: runtime_home is outside supervisor_home — subagent writes may fail. Run: codex_lead_cc config reset` },
+    { name: "runtime_home_inside_supervisor_home", ok: rtInside, detail: rtInside ? "ok" : `WARNING: runtime_home is outside supervisor_home — bridge writes may fail. Run: codex_lead_cc config reset` },
     { name: "task_dir_writable", ok: taskProbe.ok, detail: taskProbe.detail },
     { name: "artifact_root_writable", ok: artifactProbe.ok, detail: artifactProbe.detail },
     { name: "env_file_writable", ok: envProbe.ok, detail: envProbe.detail },
@@ -461,13 +471,14 @@ function printHelp(): void {
 
 Usage:
   codex_lead_cc [--doctor] [codex args...]
-  codex_lead_cc submit --task-file <path> --session-file <path>
-  codex_lead_cc delegate --task-file <path> --session-file <path>  # manual debug
-  codex_lead_cc daemon --session-file <path>
+  codex_lead_cc cc-send [--timeout-sec 120] "prompt"
+  codex_lead_cc cc-input --key <1|2|3|enter|escape|ctrl-c>
+  codex_lead_cc cc-status
   codex_lead_cc update [--from <git-url>] [--dry-run]
   codex_lead_cc config show | reset | path
 
 Supervisor behavior is loaded from CLAUDE.md in supervisor_home.
+cc-send, cc-input, and cc-status require an active CODEX_LEAD_CC_BRIDGE_SOCKET environment.
 `);
 }
 

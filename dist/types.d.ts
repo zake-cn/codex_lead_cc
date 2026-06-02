@@ -1,62 +1,34 @@
-export declare const FINAL_TASK_STATUSES: readonly ["completed", "failed", "timeout", "stopped"];
-export type FinalTaskStatus = (typeof FINAL_TASK_STATUSES)[number];
-export interface ClaudeCliRunOptions {
-    projectPath: string;
-    task: string;
-    timeoutSec: number;
-    env?: NodeJS.ProcessEnv;
-    onStdout?: (chunk: string) => void;
-    onStderr?: (chunk: string) => void;
-}
-export interface ClaudeCliRunResult {
-    status: FinalTaskStatus;
-    stdout: string;
-    stderr: string;
-    exitCode: number | null;
-    pid: number | undefined;
-    startedAt: Date;
-    finishedAt: Date;
-    durationMs: number;
-    error?: string;
-}
-export interface RunningClaudeCli {
-    pid: number | undefined;
-    finished: Promise<ClaudeCliRunResult>;
-    stop: (reason?: string) => void;
-}
 export interface SessionFile {
     version: 1;
     session_id: string;
     project_path: string;
     supervisor_home: string;
-    task_dir: string;
-    artifact_root: string;
-    queue_dir: string;
-    result_dir: string;
+    task_dir?: string;
+    artifact_root?: string;
+    bridge_socket: string;
     claude_env_file: string;
-    daemon_pid?: number;
+    bridge_pid?: number;
+    cc_pid?: number;
     created_at: string;
 }
-export declare const WORKER_TYPES: readonly ["readonly", "write"];
-export type WorkerType = (typeof WORKER_TYPES)[number];
-export interface ParsedTaskFile {
-    task_id: string;
-    worker_type: WorkerType;
-    goal: string;
-    allowed_scope: string;
-    forbidden_actions: string;
-    acceptance_criteria: string;
-    verification: string;
-    report_requirements: string;
+export declare const BRIDGE_STATUSES: readonly ["idle", "running", "needs_permission", "timeout", "interrupted", "exited"];
+export type BridgeStatus = (typeof BRIDGE_STATUSES)[number];
+export declare const BRIDGE_RESULT_STATUSES: readonly ["completed", "needs_permission", "timeout", "interrupted", "exited", "busy"];
+export type BridgeResultStatus = (typeof BRIDGE_RESULT_STATUSES)[number];
+export declare const BRIDGE_INPUT_KEYS: readonly ["1", "2", "3", "enter", "escape", "ctrl-c"];
+export type BridgeInputKey = (typeof BRIDGE_INPUT_KEYS)[number];
+export interface BridgeStatusPayload {
+    status: BridgeStatus;
+    bridge_pid: number;
+    cc_pid?: number;
+    last_output: string;
+    bottom_lines: string[];
+    spinner_detected: boolean;
+    permission_prompt_detected: boolean;
+    suggested_keys: string[];
 }
-export interface DelegateResult {
-    task_id: string;
-    worker_type: WorkerType;
-    status: FinalTaskStatus;
-    exit_code: number | null;
-    duration_ms: number;
-    artifact_dir: string;
-    changed_files: string[];
-    summary: string;
+export interface BridgeCommandResult {
+    status: BridgeResultStatus;
+    suggested_keys?: string[];
     error?: string;
 }
