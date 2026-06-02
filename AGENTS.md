@@ -1,28 +1,35 @@
 # codex_lead_cc (project docs)
 
-> Documentation only. The actual supervisor rules are written to `CLAUDE.md`
-> in supervisor_home by the `codex_lead_cc` wrapper on first launch.
+> Documentation only. The actual supervisor rules Codex loads are written to
+> `CLAUDE.md` in supervisor_home by the wrapper on first launch.
 
 ## Architecture
 
 ```
-Codex Lead (supervisor_home, reads CLAUDE.md)
-  → Bash: write TaskFile
+Codex Lead (cwd = supervisor_home, reads CLAUDE.md)
+  → Bash: write TaskFile into $CODEX_LEAD_CC_TASK_DIR
   → Bash: CODEX_CLAUDE_CHILD_THREAD=1 codex_lead_cc delegate
   → Delegate spawns Claude Code (cwd = real project)
-  → JSON result → Codex Lead decides next step
+  → JSON result → next step
 ```
 
-## Delegate command (must be ONE line, inline env var)
+ALL runtime files (sessions, tasks, artifacts, env files) live inside
+supervisor_home under `.codex_lead_cc_runtime/`. Nothing is written outside
+supervisor_home by Codex or subagents.
+
+## Delegate command
+
+MUST be ONE line with inline env var:
 
 ```bash
 CODEX_CLAUDE_CHILD_THREAD=1 codex_lead_cc delegate \
-  --task-file "/absolute/path/to/task.md" \
-  --session-file "$CODEX_LEAD_CC_SESSION_FILE" \
+  --task-file "/absolute/path/in/supervisor_home/task.md" \
+  --session-file "/absolute/path/in/supervisor_home/session.json" \
   --timeout-sec 120
 ```
 
-Progress goes to stderr. Result JSON goes to stdout.
+- Use ABSOLUTE paths only. Never literal placeholders.
+- Progress → stderr. JSON result → stdout.
 
 ## TaskFile format
 

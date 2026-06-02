@@ -10,9 +10,12 @@ import {
   redactConfigForDisplay,
 } from "../claude/claude_runtime_env.js";
 import {
+  assertPathInside,
   ensureUserConfigDirectories,
+  isPathInside,
   loadOrCreateUserConfig,
   resetUserConfig,
+  runtimeHomeWarning,
   userConfigPath,
   type EffectiveCodexLeadUserConfig,
 } from "../config/user_config.js";
@@ -26,7 +29,7 @@ import type { SessionFile } from "../types.js";
 const wrapperDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(wrapperDir, "..", "..");
 
-// ── Default CLAUDE.md (written to supervisor_home on first launch) ──
+// ── Default CLAUDE.md ──
 
 const DEFAULT_CLAUDE_MD = [
   "# codex_lead_cc Supervisor Rules",
@@ -35,19 +38,21 @@ const DEFAULT_CLAUDE_MD = [
   "You must NOT read, write, or run commands inside the real project directory.",
   "Only Claude Code (launched via codex_lead_cc delegate) may touch the project.",
   "",
+  "ALL runtime directories (tasks, artifacts, sessions) are INSIDE supervisor_home.",
+  "Do NOT create files under ~/.codex_lead_cc/runtime — that path is no longer used.",
+  "",
   "## Environment",
   "",
-  "- CODEX_LEAD_CC_TASK_DIR — absolute path where TaskFiles are written",
-  "- CODEX_LEAD_CC_SESSION_FILE — absolute path to session.json",
-  "- CODEX_LEAD_CC_BIN — absolute path to codex_lead_cc binary",
-  "- CODEX_LEAD_CC_ARTIFACT_ROOT — artifact output root",
+  "- CODEX_LEAD_CC_TASK_DIR — absolute path inside supervisor_home for TaskFiles",
+  "- CODEX_LEAD_CC_SESSION_FILE — absolute path to session.json inside supervisor_home",
+  "- CODEX_LEAD_CC_BIN — absolute path to the codex_lead_cc binary",
+  "- CODEX_LEAD_CC_ARTIFACT_ROOT — artifact output root inside supervisor_home",
   "",
   "## How to delegate work",
   "",
   "### Step 1 — Write a TaskFile",
   "",
-  'Use Bash to write the TaskFile to $CODEX_LEAD_CC_TASK_DIR/task_NNN.md.',
-  "Choose a unique task_NNN (e.g. task_001, task_002).",
+  "Use Bash. Write the TaskFile to $CODEX_LEAD_CC_TASK_DIR/task_NNN.md",
   "",
   "```bash",
   "cat > \"$CODEX_LEAD_CC_TASK_DIR/task_NNN.md\" << 'TASKEOF'",
@@ -90,25 +95,22 @@ const DEFAULT_CLAUDE_MD = [
   "",
   "### Step 2 — Execute the delegate",
   "",
-  "Use Bash to run exactly ONE command-line. Replace $TASK_FILE with the ACTUAL absolute path.",
-  "Do NOT use the literal string <TASK_FILE>.",
-  "Do NOT export CODEX_CLAUDE_CHILD_THREAD on a separate line.",
-  "The env var must be an inline prefix on the same command.",
+  "Run exactly ONE command-line. $TASK_FILE and $SESSION_FILE must be ABSOLUTE paths.",
+  "Do NOT use literal placeholder strings. Do NOT export on a separate line.",
   "",
   "```bash",
   'CODEX_CLAUDE_CHILD_THREAD=1 "$CODEX_LEAD_CC_BIN" delegate --task-file "$TASK_FILE" --session-file "$CODEX_LEAD_CC_SESSION_FILE" --timeout-sec 120',
   "```",
   "",
-  "The delegate writes progress to stderr and a single JSON result to stdout.",
-  "Read the JSON from stdout to decide the next step.",
-  "Do NOT analyze, inspect, or read the project yourself.",
+  "The delegate writes progress to stderr and a JSON result to stdout.",
+  "Read only stdout JSON to decide next steps. Do NOT analyze the project yourself.",
   "",
   "### Step 3 — Decide next action",
   "",
-  'Read the "status" field from the JSON result:',
-  '- "completed" — review the summary, create next task if needed',
-  '- "failed" — check artifact dir for claude_stderr.log, decide retry or report',
-  '- "timeout" — may retry with a longer --timeout-sec value',
+  'Check the "status" field in the JSON:',
+  '- "completed" — review summary, create next task if needed',
+  '- "failed" — check artifact dir for claude_stderr.log',
+  '- "timeout" — retry with longer --timeout-sec',
 ].join("\n");
 
 // ── main ──
@@ -139,20 +141,19 @@ async function main(): Promise<void> {
     return;
   }
 
-  // Ensure CLAUDE.md exists in supervisor_home (Codex auto-loads this)
-  ensureClaudeMd(userConfig.supervisor_home);
+  // Warn if runtime_home is outside supervisor_home
+  const rtw = runtimeHomeWarning(userConfig);
+  if (rtw) process.stderr.write(`Warning: ${rtw}\n`);
 
-  // Generate session
+  ensureClaudeMd(userConfig.supervisor_home);
   const session = createSession(userConfig);
 
-  // Prepare Claude runtime env file
   const claudeEnv = prepareClaudeRuntimeEnvFile({
     runtimeHome: userConfig.runtime_home,
     sessionId: session.sessionId,
     config: userConfig.claude_runtime,
   });
 
-  // Write session file
   writeFileSync(
     session.filePath,
     JSON.stringify(
@@ -162,7 +163,6 @@ async function main(): Promise<void> {
     "utf8",
   );
 
-  // Build Codex env
   const codexLeadBin = process.argv[1] || path.join(wrapperDir, "codex_lead_cc.js");
   const codexEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
@@ -203,8 +203,15 @@ function createSession(userConfig: EffectiveCodexLeadUserConfig): SessionInfo {
   const sessionDir = path.join(userConfig.runtime_home, "sessions", sessionId);
   const taskDir = path.join(sessionDir, "tasks");
   const artifactRoot = path.join(sessionDir, "artifacts");
+
+  // ALL runtime paths MUST be inside supervisor_home
+  assertPathInside(sessionDir, userConfig.supervisor_home, "sessionDir");
+  assertPathInside(taskDir, userConfig.supervisor_home, "taskDir");
+  assertPathInside(artifactRoot, userConfig.supervisor_home, "artifactRoot");
+
   mkdirSync(taskDir, { recursive: true });
   mkdirSync(artifactRoot, { recursive: true });
+
   return {
     sessionId,
     filePath: path.join(sessionDir, "session.json"),
@@ -219,7 +226,7 @@ function createSession(userConfig: EffectiveCodexLeadUserConfig): SessionInfo {
   };
 }
 
-// ── CLI parsing ──
+// ── CLI ──
 
 function parseArgs(args: string[]): { doctor: boolean; codexArgs: string[] } {
   let doctor = false;
@@ -232,22 +239,18 @@ function parseArgs(args: string[]): { doctor: boolean; codexArgs: string[] } {
   return { doctor, codexArgs };
 }
 
-// ── CLAUDE.md ──
-
 function ensureClaudeMd(supervisorHome: string): void {
-  const claudeMdPath = path.join(supervisorHome, "CLAUDE.md");
-  if (!existsSync(claudeMdPath)) {
+  const p = path.join(supervisorHome, "CLAUDE.md");
+  if (!existsSync(p)) {
     mkdirSync(supervisorHome, { recursive: true });
-    writeFileSync(claudeMdPath, DEFAULT_CLAUDE_MD, "utf8");
+    writeFileSync(p, DEFAULT_CLAUDE_MD, "utf8");
   }
 }
-
-// ── Readiness ──
 
 function assertReadyToLaunch(userConfig: EffectiveCodexLeadUserConfig): void {
   if (!checkCommand("codex").ok) throw new Error("codex command is not available on PATH.");
   if (!checkRuntimeCommand(userConfig.claude_runtime.command).ok) {
-    process.stderr.write(`Warning: Claude runtime "${userConfig.claude_runtime.command}" is not available.\n`);
+    process.stderr.write(`Warning: Claude "${userConfig.claude_runtime.command}" not available.\n`);
   }
 }
 
@@ -255,18 +258,29 @@ function assertReadyToLaunch(userConfig: EffectiveCodexLeadUserConfig): void {
 
 function printDoctor(userConfig: EffectiveCodexLeadUserConfig): void {
   const installSource = detectInstallSource(repoRoot);
+
   let envBridgeOk = false;
   try {
     const sid = `doctor_${randomUUID().slice(0, 8)}`;
     const r = prepareClaudeRuntimeEnvFile({ runtimeHome: userConfig.runtime_home, sessionId: sid, config: userConfig.claude_runtime });
     envBridgeOk = Boolean(r.env_file && existsSync(r.env_file));
   } catch { /* ignore */ }
+
+  const rtInside = isPathInside(userConfig.runtime_home, userConfig.supervisor_home);
+  const taskProbe = writeProbe(path.join(userConfig.runtime_home, "sessions", ".doctor_probe"));
+  const artifactProbe = writeProbe(path.join(userConfig.runtime_home, "sessions", ".doctor_probe"));
+  const envProbe = writeProbe(path.join(userConfig.runtime_home, "sessions", ".doctor_probe"));
+
   const checks = [
     { name: "node_version", ok: Number(process.versions.node.split(".")[0]) >= 20, detail: process.version },
     checkCommand("npm"), checkCommand("codex"), checkCommand("git"),
     checkRuntimeCommand(userConfig.claude_runtime.command),
     { name: "supervisor_home", ok: existsSync(userConfig.supervisor_home), detail: userConfig.supervisor_home },
     { name: "runtime_home", ok: existsSync(userConfig.runtime_home), detail: userConfig.runtime_home },
+    { name: "runtime_home_inside_supervisor_home", ok: rtInside, detail: rtInside ? "ok" : `WARNING: runtime_home is outside supervisor_home — subagent writes may fail. Run: codex_lead_cc config reset` },
+    { name: "task_dir_writable", ok: taskProbe.ok, detail: taskProbe.detail },
+    { name: "artifact_root_writable", ok: artifactProbe.ok, detail: artifactProbe.detail },
+    { name: "env_file_writable", ok: envProbe.ok, detail: envProbe.detail },
     { name: "codex_lead_cc_config", ok: existsSync(userConfig.config_path), detail: userConfig.config_path },
     { name: "claude_md", ok: existsSync(path.join(userConfig.supervisor_home, "CLAUDE.md")), detail: path.join(userConfig.supervisor_home, "CLAUDE.md") },
     { name: "install_source", ok: true, detail: installSource.detail, value: installSource },
@@ -276,15 +290,25 @@ function printDoctor(userConfig: EffectiveCodexLeadUserConfig): void {
   process.stdout.write(`${JSON.stringify({ checks }, null, 2)}\n`);
 }
 
+function writeProbe(dir: string): { ok: boolean; detail: string } {
+  try {
+    mkdirSync(dir, { recursive: true });
+    return { ok: true, detail: dir };
+  } catch (e) {
+    const msg = e instanceof Error ? `${e.message} (${(e as NodeJS.ErrnoException).code ?? "unknown"})` : String(e);
+    return { ok: false, detail: msg };
+  }
+}
+
 function checkCommand(cmd: string): { name: string; ok: boolean; detail: string } {
   const r = spawnSync("bash", ["-lc", `command -v ${cmd}`], { encoding: "utf8" });
-  return { name: `${cmd}_available`, ok: r.status === 0, detail: r.stdout.trim() || r.stderr.trim() || "not found on PATH" };
+  return { name: `${cmd}_available`, ok: r.status === 0, detail: r.stdout.trim() || r.stderr.trim() || "not found" };
 }
 
 function checkRuntimeCommand(cmd: string): { name: string; ok: boolean; detail: string } {
   if (cmd.includes("/")) return { name: "claude_available", ok: existsSync(cmd), detail: cmd };
   const r = spawnSync("bash", ["-lc", `command -v ${shellQuote(cmd)}`], { encoding: "utf8" });
-  return { name: "claude_available", ok: r.status === 0, detail: r.stdout.trim() || r.stderr.trim() || "not found on PATH" };
+  return { name: "claude_available", ok: r.status === 0, detail: r.stdout.trim() || r.stderr.trim() || "not found" };
 }
 
 // ── Config ──
@@ -318,7 +342,6 @@ Usage:
   codex_lead_cc update [--from <git-url>] [--dry-run]
   codex_lead_cc config show | reset | path
 
-The wrapper starts Codex from supervisor_home.
 Supervisor behavior is loaded from CLAUDE.md in supervisor_home.
 `);
 }

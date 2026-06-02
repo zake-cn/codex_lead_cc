@@ -19,7 +19,7 @@ export interface EffectiveCodexLeadUserConfig extends CodexLeadUserConfig {
   config_path: string;
 }
 
-const CONFIG_VERSION = 2;
+const CONFIG_VERSION = 3;
 
 export function codexLeadHome(): string {
   return path.resolve(
@@ -31,16 +31,20 @@ export function userConfigPath(): string {
   return path.join(codexLeadHome(), "config.json");
 }
 
+// Default runtime_home is now INSIDE supervisor_home so subagents can write.
+function defaultRuntimeHome(supervisorHome: string): string {
+  return path.join(supervisorHome, ".codex_lead_cc_runtime");
+}
+
 export function defaultUserConfig(): CodexLeadUserConfig {
   const homeOverride = process.env.CODEX_LEAD_CC_HOME;
+  const supervisor = homeOverride
+    ? path.join(homeOverride, "supervisor")
+    : path.join(os.homedir(), ".codex_lead_cc", "supervisor");
   return {
     version: CONFIG_VERSION,
-    supervisor_home: homeOverride
-      ? path.join(homeOverride, "supervisor")
-      : path.join(os.homedir(), ".codex_lead_cc", "supervisor"),
-    runtime_home: homeOverride
-      ? path.join(homeOverride, "runtime")
-      : path.join(os.homedir(), ".codex_lead_cc", "runtime"),
+    supervisor_home: supervisor,
+    runtime_home: defaultRuntimeHome(supervisor),
     claude_runtime: defaultClaudeRuntimeConfig(),
   };
 }
@@ -78,24 +82,36 @@ export async function resetUserConfig(): Promise<EffectiveCodexLeadUserConfig> {
 export async function ensureUserConfigDirectories(
   config: EffectiveCodexLeadUserConfig,
 ): Promise<void> {
-  await Promise.all([
-    mkdir(config.supervisor_home, { recursive: true }),
-    mkdir(config.runtime_home, { recursive: true }),
-  ]);
+  // supervisor_home must be created first (runtime_home is inside it)
+  await mkdir(config.supervisor_home, { recursive: true });
+  await mkdir(config.runtime_home, { recursive: true });
 }
+
+// ── internal ──
 
 function mergeUserConfig(raw: Partial<CodexLeadUserConfig>): CodexLeadUserConfig {
   const defaults = defaultUserConfig();
+  const expandedSupervisor = expandHome(
+    normalizePathSetting(raw.supervisor_home, defaults.supervisor_home),
+  );
+
+  // If old config (version < 3), migrate runtime_home inside supervisor_home
+  const oldDefaultRuntime = path.join(
+    path.dirname(expandedSupervisor),  // ~/.codex_lead_cc
+    "runtime",
+  );
+  const rawRuntime = normalizePathSetting(raw.runtime_home, "");
+  const isOldDefault = rawRuntime === "~/.codex_lead_cc/runtime"
+    || path.resolve(expandHome(rawRuntime || "")) === oldDefaultRuntime
+    || (raw.version ?? 0) < 3
+    || !rawRuntime;
+
   return {
     version: CONFIG_VERSION,
-    supervisor_home: normalizePathSetting(
-      raw.supervisor_home,
-      defaults.supervisor_home,
-    ),
-    runtime_home: normalizePathSetting(
-      raw.runtime_home,
-      defaults.runtime_home,
-    ),
+    supervisor_home: normalizePathSetting(raw.supervisor_home, defaults.supervisor_home),
+    runtime_home: isOldDefault
+      ? defaultRuntimeHome(expandedSupervisor)
+      : normalizePathSetting(raw.runtime_home, defaultRuntimeHome(expandedSupervisor)),
     claude_runtime: normalizeClaudeRuntimeConfig(raw.claude_runtime),
   };
 }
@@ -123,12 +139,39 @@ function normalizePathSetting(value: unknown, fallback: string): string {
   return typeof value === "string" && value.trim() ? value.trim() : fallback;
 }
 
-function expandHome(value: string): string {
-  if (value === "~") {
-    return os.homedir();
-  }
-  if (value.startsWith("~/")) {
-    return path.join(os.homedir(), value.slice(2));
-  }
+export function expandHome(value: string): string {
+  if (value === "~") return os.homedir();
+  if (value.startsWith("~/")) return path.join(os.homedir(), value.slice(2));
   return path.resolve(value);
+}
+
+// ── Path safety ──
+
+export function isPathInside(child: string, parent: string): boolean {
+  const resolvedChild = path.resolve(child);
+  const resolvedParent = path.resolve(parent);
+  return resolvedChild === resolvedParent
+    || resolvedChild.startsWith(resolvedParent + path.sep);
+}
+
+export function assertPathInside(child: string, parent: string, label: string): void {
+  if (!isPathInside(child, parent)) {
+    throw new Error(
+      `${label} must be inside supervisor_home.\n` +
+      `  ${label}: ${child}\n` +
+      `  supervisor_home: ${parent}`,
+    );
+  }
+}
+
+export function runtimeHomeWarning(config: EffectiveCodexLeadUserConfig): string | undefined {
+  if (!isPathInside(config.runtime_home, config.supervisor_home)) {
+    return (
+      `runtime_home is outside supervisor_home and may not be writable from Codex subagents.\n` +
+      `  runtime_home: ${config.runtime_home}\n` +
+      `  supervisor_home: ${config.supervisor_home}\n` +
+      `  Consider resetting config: codex_lead_cc config reset`
+    );
+  }
+  return undefined;
 }

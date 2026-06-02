@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { loadClaudeRuntimeEnvFileIntoProcess } from "../claude/claude_runtime_env.js";
 import { startClaudeCli } from "../claude/claude_cli_runner.js";
 import { writePrestartArtifacts, writeResultArtifacts } from "./artifacts.js";
@@ -18,7 +19,18 @@ export async function runDelegate(options) {
     log(`  timeout_sec: ${options.timeoutSec}`);
     // 2. Load session
     const session = await loadSessionFile(options.sessionFile);
-    log(`session loaded (project: ${session.project_path})`);
+    log(`session loaded (project: ${session.project_path}, supervisor: ${session.supervisor_home})`);
+    // 2a. Consistency: runtime dirs must be inside supervisor_home
+    assertInside(session.task_dir, session.supervisor_home, "task_dir");
+    assertInside(session.artifact_root, session.supervisor_home, "artifact_root");
+    // 2b. Consistency: project_path must NOT be inside supervisor_home
+    assertOutside(session.project_path, session.supervisor_home, "project_path");
+    // 2c. Consistency: taskFile must belong to this session
+    if (!isInside(options.taskFile, session.task_dir)) {
+        throw new Error(`TaskFile does not belong to this session.\n` +
+            `  task_file: ${options.taskFile}\n` +
+            `  session.task_dir: ${session.task_dir}`);
+    }
     // 3. Load Claude runtime env
     loadClaudeRuntimeEnvFileIntoProcess(session.claude_env_file);
     log("claude env loaded");
@@ -81,7 +93,7 @@ export async function runDelegate(options) {
     log(`delegate complete: ${delegateResult.status}`);
     return delegateResult;
 }
-// ── Prompt construction ──
+// ── Prompt ──
 function buildClaudePrompt(taskFile, rawTaskFile) {
     const header = taskFile.worker_type === "readonly"
         ? [
@@ -116,7 +128,7 @@ function buildClaudePrompt(taskFile, rawTaskFile) {
         ];
     return [...header, "", "---", "", rawTaskFile].join("\n");
 }
-// ── CLI entry ──
+// ── CLI ──
 export async function delegateMain(rawArgs) {
     let taskFile;
     let sessionFile;
@@ -168,7 +180,6 @@ export async function delegateMain(rawArgs) {
             throw new Error("--session-file is required.");
     }
     const result = await runDelegate({ taskFile, sessionFile, timeoutSec, dryRun });
-    // stdout: ONLY the compact JSON result
     process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
 }
 function delegateHelp() {
@@ -177,12 +188,32 @@ function delegateHelp() {
 Usage:
   codex_lead_cc delegate --task-file <path> --session-file <path> [--timeout-sec 300] [--dry-run]
 
-This command must be invoked with CODEX_CLAUDE_CHILD_THREAD=1.
+Must be invoked with CODEX_CLAUDE_CHILD_THREAD=1.
 `;
 }
-// ── Progress logging (stderr only, never stdout) ──
+// ── Logging (stderr only) ──
 function log(message) {
     process.stderr.write(`[delegate] ${message}\n`);
+}
+// ── Path checks ──
+function isInside(child, parent) {
+    const c = path.resolve(child);
+    const p = path.resolve(parent);
+    return c === p || c.startsWith(p + path.sep);
+}
+function assertInside(child, parent, label) {
+    if (!isInside(child, parent)) {
+        throw new Error(`${label} must be inside supervisor_home.\n` +
+            `  ${label}: ${child}\n` +
+            `  supervisor_home: ${parent}`);
+    }
+}
+function assertOutside(child, parent, label) {
+    if (isInside(child, parent)) {
+        throw new Error(`${label} must NOT be inside supervisor_home.\n` +
+            `  ${label}: ${child}\n` +
+            `  supervisor_home: ${parent}`);
+    }
 }
 // ── Dry run ──
 function dryRunResult(taskFile, session, prompt, artifactDir) {

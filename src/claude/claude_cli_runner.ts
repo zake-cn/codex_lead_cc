@@ -40,7 +40,7 @@ export function startClaudeCli(
 
   const finished = new Promise<ClaudeCliRunResult>((resolve) => {
     if (!child) {
-      resolve(makeResult("failed", "Failed to spawn Claude process.", null, undefined));
+      resolve(makeResult("failed", "", "Failed to spawn Claude process.", null, "Failed to spawn Claude process."));
       return;
     }
 
@@ -90,7 +90,7 @@ export function startClaudeCli(
 
     child.on("error", (error: NodeJS.ErrnoException) => {
       const message = error.code === "ENOENT" ? CLAUDE_NOT_FOUND_MESSAGE : error.message;
-      finish(makeResult("failed", appendLine(stdout, message), null, message));
+      finish(makeResult("failed", stdout, appendLine(stderr, message), null, message));
     });
 
     child.on("close", (code) => {
@@ -98,6 +98,7 @@ export function startClaudeCli(
       finish(makeResult(
         determineStatus({ timedOut, stopped, exitCode }),
         stdout,
+        stderr,
         exitCode,
       ));
     });
@@ -138,6 +139,7 @@ export function startClaudeCli(
 function makeResult(
   status: FinalTaskStatus,
   stdout: string,
+  stderr: string,
   exitCode: number | null,
   error?: string,
 ): ClaudeCliRunResult {
@@ -145,7 +147,7 @@ function makeResult(
   return {
     status,
     stdout,
-    stderr: "",
+    stderr,
     exitCode,
     pid: undefined,
     startedAt: now,

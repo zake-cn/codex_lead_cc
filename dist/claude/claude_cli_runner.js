@@ -24,7 +24,7 @@ export function startClaudeCli(options) {
     });
     const finished = new Promise((resolve) => {
         if (!child) {
-            resolve(makeResult("failed", "Failed to spawn Claude process.", null, undefined));
+            resolve(makeResult("failed", "", "Failed to spawn Claude process.", null, "Failed to spawn Claude process."));
             return;
         }
         const timeoutTimer = setTimeout(() => {
@@ -69,11 +69,11 @@ export function startClaudeCli(options) {
         });
         child.on("error", (error) => {
             const message = error.code === "ENOENT" ? CLAUDE_NOT_FOUND_MESSAGE : error.message;
-            finish(makeResult("failed", appendLine(stdout, message), null, message));
+            finish(makeResult("failed", stdout, appendLine(stderr, message), null, message));
         });
         child.on("close", (code) => {
             exitCode = code;
-            finish(makeResult(determineStatus({ timedOut, stopped, exitCode }), stdout, exitCode));
+            finish(makeResult(determineStatus({ timedOut, stopped, exitCode }), stdout, stderr, exitCode));
         });
     });
     function stop(reason) {
@@ -104,12 +104,12 @@ export function startClaudeCli(options) {
     };
 }
 // ── helpers ──
-function makeResult(status, stdout, exitCode, error) {
+function makeResult(status, stdout, stderr, exitCode, error) {
     const now = new Date();
     return {
         status,
         stdout,
-        stderr: "",
+        stderr,
         exitCode,
         pid: undefined,
         startedAt: now,
