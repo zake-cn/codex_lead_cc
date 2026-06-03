@@ -28,9 +28,11 @@ import type {
 import { BRIDGE_INPUT_KEYS } from "../types.js";
 import { CompletionDetector, DEFAULT_COMPLETION_OPTIONS, DONE_MARKER } from "./completion_detector.js";
 import { startClaudePty, type ClaudePty } from "./pty.js";
-import { SimpleAnsiTerminalScreen } from "./terminal_screen.js";
+import { SimpleAnsiTerminalScreen, stripAnsi, type TerminalScreenSnapshot } from "./terminal_screen.js";
 
 const INBOX_POLL_MS = 100;
+const SUBMIT_DELAY_MS = 150;
+const EFFECTIVE_OUTPUT_MIN_CHARS = 2;
 
 interface BridgeOptions {
   sessionFile: string;
@@ -46,12 +48,23 @@ interface FileBridgeRequest {
 }
 
 interface ActiveInteraction {
+  request: FileBridgeRequest;
   requestId: string;
   streamFile: string;
   resultFile: string;
+  debugDir: string;
+  rawStreamFile: string;
+  sentPromptText: string;
   startedAt: number;
   deadlineAt: number;
   seenDoneMarker: boolean;
+  submittedAt?: number;
+  firstOutputAfterSubmitAt?: number;
+  effectiveOutputSeen: boolean;
+  inputEchoDetected: boolean;
+  inputEchoOnly: boolean;
+  decisionReason: string;
+  submitTimer?: ReturnType<typeof setTimeout>;
   timer: ReturnType<typeof setInterval>;
 }
 
@@ -134,51 +147,51 @@ class CcBridge {
     this.writeImmediateResult(request.request_id, {
       status: "interrupted",
       error: `Unknown request type: ${(request as { type?: unknown }).type}`,
-    });
+    }, request);
   }
 
   private handleSend(request: FileBridgeRequest): void {
     if (this.state === "exited") {
-      this.writeImmediateResult(request.request_id, { status: "exited" });
+      this.writeImmediateResult(request.request_id, { status: "exited" }, request);
       return;
     }
     if (this.active || this.state === "running") {
-      this.writeImmediateResult(request.request_id, { status: "busy" });
+      this.writeImmediateResult(request.request_id, { status: "busy" }, request);
       return;
     }
     if (this.state === "needs_permission") {
       this.writeImmediateResult(request.request_id, {
         status: "needs_permission",
         suggested_keys: this.suggestedKeys,
-      });
+      }, request);
       return;
     }
     if (!request.prompt) {
       this.writeImmediateResult(request.request_id, {
         status: "interrupted",
         error: "send request is missing prompt.",
-      });
+      }, request);
       return;
     }
 
-    this.startInteraction(request);
-    this.pty.write(ensureSubmitted(request.prompt));
+    const active = this.startInteraction(request);
+    this.sendPromptToClaude(active, request.prompt);
   }
 
   private handleInput(request: FileBridgeRequest): void {
     if (this.state === "exited") {
-      this.writeImmediateResult(request.request_id, { status: "exited" });
+      this.writeImmediateResult(request.request_id, { status: "exited" }, request);
       return;
     }
     if (this.active || this.state === "running") {
-      this.writeImmediateResult(request.request_id, { status: "busy" });
+      this.writeImmediateResult(request.request_id, { status: "busy" }, request);
       return;
     }
     if (!request.key || !isBridgeInputKey(request.key)) {
       this.writeImmediateResult(request.request_id, {
         status: "interrupted",
         error: "input request has an invalid key.",
-      });
+      }, request);
       return;
     }
 
@@ -188,30 +201,60 @@ class CcBridge {
       this.suggestedKeys = [];
     }
 
-    this.startInteraction(request);
+    const active = this.startInteraction(request);
+    active.submittedAt = Date.now();
+    active.decisionReason = "input_sent";
     this.pty.write(inputKeyToBytes(request.key));
+    this.writeState();
   }
 
-  private startInteraction(request: FileBridgeRequest): void {
+  private startInteraction(request: FileBridgeRequest): ActiveInteraction {
     const now = Date.now();
     const streamFile = path.join(this.streamsDir, `${request.request_id}.log`);
     const resultFile = path.join(this.resultsDir, `${request.request_id}.json`);
+    const debugDir = path.join(this.session.artifact_root, "debug", request.request_id);
+    const rawStreamFile = path.join(debugDir, "raw_stream.log");
+    mkdirSync(debugDir, { recursive: true });
     writeFileSync(streamFile, "", "utf8");
+    writeFileSync(rawStreamFile, "", "utf8");
+    writeJsonAtomic(path.join(debugDir, "request.json"), request);
 
     this.state = "running";
     this.lastOutputAt = now;
     const active: ActiveInteraction = {
+      request,
       requestId: request.request_id,
       streamFile,
       resultFile,
+      debugDir,
+      rawStreamFile,
+      sentPromptText: request.type === "send" ? request.prompt ?? "" : request.key ?? "",
       startedAt: now,
       deadlineAt: now + request.timeout_sec * 1_000,
       seenDoneMarker: false,
+      effectiveOutputSeen: false,
+      inputEchoDetected: false,
+      inputEchoOnly: false,
+      decisionReason: "started",
       timer: setInterval(() => this.checkCompletion(), DEFAULT_COMPLETION_OPTIONS.checkIntervalMs),
     };
     active.timer.unref();
     this.active = active;
     this.writeState();
+    return active;
+  }
+
+  private sendPromptToClaude(active: ActiveInteraction, prompt: string): void {
+    this.pty.write(prompt);
+    active.decisionReason = "prompt_written_waiting_for_enter";
+    active.submitTimer = setTimeout(() => {
+      if (this.active?.requestId !== active.requestId) return;
+      active.submittedAt = Date.now();
+      active.decisionReason = "enter_sent";
+      this.pty.write("\r");
+      this.writeState();
+    }, SUBMIT_DELAY_MS);
+    active.submitTimer.unref();
   }
 
   private onPtyOutput(chunk: string): void {
@@ -223,13 +266,21 @@ class CcBridge {
     if (this.active) {
       if (chunk.includes(DONE_MARKER)) {
         this.active.seenDoneMarker = true;
+        this.active.effectiveOutputSeen = true;
+        this.active.decisionReason = "done_marker";
       }
       appendFileSync(this.active.streamFile, chunk, "utf8");
+      appendFileSync(this.active.rawStreamFile, chunk, "utf8");
     }
 
     this.refreshScreenDetection();
+    if (this.active) {
+      this.updateActiveOutputDetection(this.active, chunk, this.screen.snapshot());
+    }
     if (this.permissionPromptDetected) {
       if (this.active) {
+        this.active.effectiveOutputSeen = true;
+        this.active.decisionReason = "permission_prompt";
         this.finishActive({
           status: "needs_permission",
           suggested_keys: this.suggestedKeys,
@@ -252,17 +303,34 @@ class CcBridge {
 
   private checkCompletion(): void {
     if (!this.active) return;
-    const result = this.detector.check({
+    const snapshot = this.screen.snapshot();
+    const inputBoxStillContainsPrompt = this.inputBoxStillContainsPrompt(this.active, snapshot);
+    if (inputBoxStillContainsPrompt && !this.active.effectiveOutputSeen) {
+      this.active.decisionReason = "input_box_still_contains_prompt";
+    }
+    let result = this.detector.check({
       now: Date.now(),
       startedAt: this.active.startedAt,
+      submittedAt: this.active.submittedAt,
       lastOutputAt: this.lastOutputAt,
       deadlineAt: this.active.deadlineAt,
       seenDoneMarker: this.active.seenDoneMarker,
-      snapshot: this.screen.snapshot(),
+      effectiveOutputSeen: this.active.effectiveOutputSeen,
+      inputBoxStillContainsPrompt,
+      snapshot,
     });
     this.refreshScreenDetection();
     this.writeState();
     if (result) {
+      if (result.status === "not_submitted" && this.active.decisionReason === "enter_sent") {
+        this.active.decisionReason = inputBoxStillContainsPrompt ? "input_echo_only" : "no_effective_output";
+      }
+      if (result.status === "not_submitted" && this.active.request.type === "input") {
+        result = {
+          ...result,
+          error: "Input did not produce effective Claude Code output.",
+        };
+      }
       this.finishActive(result);
     }
   }
@@ -271,26 +339,161 @@ class CcBridge {
     if (!this.active) return;
     const active = this.active;
     clearInterval(active.timer);
+    if (active.submitTimer) clearTimeout(active.submitTimer);
     this.active = undefined;
 
     if (result.status === "completed") this.state = "idle";
     else if (result.status === "needs_permission") this.state = "needs_permission";
     else if (result.status === "timeout") this.state = "timeout";
     else if (result.status === "interrupted") this.state = "interrupted";
+    else if (result.status === "not_submitted") this.state = "not_submitted";
     else if (result.status === "exited") this.state = "exited";
 
     writeJsonAtomic(active.resultFile, result);
+    this.writeDebugFinish(active, result);
     this.writeState();
   }
 
-  private writeImmediateResult(requestId: string, result: BridgeCommandResult): void {
+  private writeImmediateResult(
+    requestId: string,
+    result: BridgeCommandResult,
+    request?: Partial<FileBridgeRequest>,
+  ): void {
     const streamFile = path.join(this.streamsDir, `${requestId}.log`);
     const resultFile = path.join(this.resultsDir, `${requestId}.json`);
     if (!existsSync(streamFile)) {
       writeFileSync(streamFile, "", "utf8");
     }
     writeJsonAtomic(resultFile, result);
+    this.writeImmediateDebug(requestId, result, request);
     this.writeState();
+  }
+
+  private updateActiveOutputDetection(
+    active: ActiveInteraction,
+    chunk: string,
+    snapshot: TerminalScreenSnapshot,
+  ): void {
+    const plain = normalizeForDetection(stripAnsi(chunk));
+    if (!plain) return;
+
+    if (active.submittedAt && !active.firstOutputAfterSubmitAt) {
+      active.firstOutputAfterSubmitAt = Date.now();
+    }
+
+    if (isInputEcho(active.sentPromptText, plain)) {
+      active.inputEchoDetected = true;
+      if (!active.effectiveOutputSeen) {
+        active.inputEchoOnly = true;
+        active.decisionReason = "input_echo_detected";
+      }
+    }
+
+    if (!active.submittedAt) return;
+
+    const detection = this.detector.inspect(snapshot);
+    if (detection.permissionPromptDetected) {
+      active.effectiveOutputSeen = true;
+      active.inputEchoOnly = false;
+      active.decisionReason = "permission_prompt";
+      return;
+    }
+    if (detection.spinnerDetected) {
+      active.effectiveOutputSeen = true;
+      active.inputEchoOnly = false;
+      active.decisionReason = "spinner_or_loading";
+      return;
+    }
+
+    const effectiveText = removeInputEcho(active.sentPromptText, plain);
+    if (hasMeaningfulEffectiveText(effectiveText)) {
+      active.effectiveOutputSeen = true;
+      active.inputEchoOnly = false;
+      active.decisionReason = "effective_output";
+    }
+  }
+
+  private inputBoxStillContainsPrompt(
+    active: ActiveInteraction,
+    snapshot: TerminalScreenSnapshot,
+  ): boolean {
+    if (active.request.type !== "send") return false;
+    if (!active.sentPromptText.trim()) return false;
+    const promptTail = promptNeedle(active.sentPromptText);
+    if (!promptTail) return false;
+    const visibleTail = normalizeForDetection(
+      `${snapshot.text.slice(-1_000)}\n${snapshot.bottom_lines.join("\n")}`,
+    );
+    return visibleTail.includes(promptTail);
+  }
+
+  private writeDebugFinish(active: ActiveInteraction, result: BridgeCommandResult): void {
+    const snapshot = this.screen.snapshot();
+    writeFileSync(path.join(active.debugDir, "screen_snapshot_at_finish.txt"), [
+      "## bottom_lines",
+      ...snapshot.bottom_lines,
+      "",
+      "## screen",
+      snapshot.text,
+      "",
+      "## raw_tail",
+      stripAnsi(snapshot.raw_tail),
+    ].join("\n"), "utf8");
+    writeJsonAtomic(path.join(active.debugDir, "result.json"), result);
+    writeJsonAtomic(path.join(active.debugDir, "decision.json"), this.decisionPayload(active, result, snapshot));
+  }
+
+  private writeImmediateDebug(
+    requestId: string,
+    result: BridgeCommandResult,
+    request?: Partial<FileBridgeRequest>,
+  ): void {
+    const debugDir = path.join(this.session.artifact_root, "debug", requestId);
+    mkdirSync(debugDir, { recursive: true });
+    const snapshot = this.screen.snapshot();
+    writeJsonAtomic(path.join(debugDir, "request.json"), request ?? { request_id: requestId });
+    writeFileSync(path.join(debugDir, "raw_stream.log"), "", "utf8");
+    writeFileSync(path.join(debugDir, "screen_snapshot_at_finish.txt"), snapshot.text, "utf8");
+    writeJsonAtomic(path.join(debugDir, "result.json"), result);
+    writeJsonAtomic(path.join(debugDir, "decision.json"), {
+      status: result.status,
+      seen_done_marker: false,
+      effective_output_seen: false,
+      input_echo_detected: false,
+      input_echo_only: false,
+      spinner_detected: this.spinnerDetected,
+      permission_prompt_detected: this.permissionPromptDetected,
+      quiet_ms: DEFAULT_COMPLETION_OPTIONS.quietMs,
+      reason: result.status,
+    });
+  }
+
+  private decisionPayload(
+    active: ActiveInteraction,
+    result: BridgeCommandResult,
+    snapshot: TerminalScreenSnapshot,
+  ): Record<string, unknown> {
+    const now = Date.now();
+    return {
+      status: result.status,
+      seen_done_marker: active.seenDoneMarker,
+      effective_output_seen: active.effectiveOutputSeen,
+      input_echo_detected: active.inputEchoDetected,
+      input_echo_only: active.inputEchoOnly || (!active.effectiveOutputSeen && active.inputEchoDetected),
+      spinner_detected: this.spinnerDetected,
+      permission_prompt_detected: this.permissionPromptDetected,
+      quiet_ms: DEFAULT_COMPLETION_OPTIONS.quietMs,
+      submit_grace_ms: DEFAULT_COMPLETION_OPTIONS.submitGraceMs,
+      runtime_ms: now - active.startedAt,
+      submitted_after_ms: active.submittedAt ? now - active.submittedAt : undefined,
+      first_output_after_submit_ms:
+        active.submittedAt && active.firstOutputAfterSubmitAt
+          ? active.firstOutputAfterSubmitAt - active.submittedAt
+          : undefined,
+      input_box_still_contains_prompt: this.inputBoxStillContainsPrompt(active, snapshot),
+      reason: active.decisionReason || result.status,
+      error: result.error,
+    };
   }
 
   private refreshScreenDetection(): void {
@@ -470,10 +673,6 @@ function isBridgeInputKey(value: unknown): value is BridgeInputKey {
   return typeof value === "string" && (BRIDGE_INPUT_KEYS as readonly string[]).includes(value);
 }
 
-function ensureSubmitted(prompt: string): string {
-  return prompt.endsWith("\n") || prompt.endsWith("\r") ? `${prompt}\r` : `${prompt}\r`;
-}
-
 function trimStatusOutput(value: string): string {
   return value.replace(/\s+$/g, "").slice(-2_000);
 }
@@ -485,6 +684,60 @@ function tail(value: string, max: number): string {
 
 function requestIdFromFile(requestFile: string): string {
   return path.basename(requestFile).replace(/\.json$/, "");
+}
+
+function normalizeForDetection(value: string): string {
+  return value
+    .replace(/\r/g, "\n")
+    .replace(/\u001b\[[?]2004[hl]/g, "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n")
+    .replace(/[ \t]+/g, " ")
+    .trim();
+}
+
+function promptNeedle(prompt: string): string {
+  const normalized = normalizeForDetection(prompt);
+  if (!normalized) return "";
+  const compact = normalized.replace(/\s+/g, " ");
+  return compact.slice(Math.max(0, compact.length - 80));
+}
+
+function isInputEcho(sentText: string, plainOutput: string): boolean {
+  const needle = promptNeedle(sentText);
+  if (!needle) return false;
+  const haystack = plainOutput.replace(/\s+/g, " ");
+  if (haystack.includes(needle)) return true;
+  if (needle.length > 24 && haystack.includes(needle.slice(-24))) return true;
+  return false;
+}
+
+function removeInputEcho(sentText: string, plainOutput: string): string {
+  const prompt = normalizeForDetection(sentText);
+  const promptOneLine = prompt.replace(/\s+/g, " ");
+  const promptTail = promptNeedle(sentText);
+  let out = plainOutput.replace(/\s+/g, " ");
+  for (const part of [promptOneLine, promptTail, promptTail.slice(-40), promptTail.slice(-24)]) {
+    if (part) out = out.split(part).join(" ");
+  }
+  return out
+    .replace(/\b(?:bash|sh|zsh)-?\d*(?:\.\d+)*[$#]\s*/gi, " ")
+    .replace(/[>$#]\s*$/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function hasMeaningfulEffectiveText(value: string): boolean {
+  const cleaned = value
+    .replace(/\b(?:thinking|loading|processing|waiting|working)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!cleaned) return false;
+  if (/^[|/\\\-.>_$#\s]+$/.test(cleaned)) return false;
+  const meaningfulChars = cleaned.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
+  return meaningfulChars >= EFFECTIVE_OUTPUT_MIN_CHARS;
 }
 
 function isProcessAlive(pid: number): boolean {

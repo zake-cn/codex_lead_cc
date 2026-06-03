@@ -60,6 +60,9 @@ export async function startClaudePty(options: ClaudePtyOptions): Promise<ClaudeP
     };
   }
 
+  if (process.env.CODEX_LEAD_CC_ALLOW_PTY_FALLBACK !== "1") {
+    throw new Error("node-pty is required for interactive Claude Code bridge.");
+  }
   return startScriptPty(options);
 }
 

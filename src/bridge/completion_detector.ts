@@ -9,14 +9,18 @@ export interface CompletionDetectorOptions {
   quietMs: number;
   spinnerStableMs: number;
   checkIntervalMs: number;
+  submitGraceMs: number;
 }
 
 export interface CompletionCheckInput {
   now: number;
   startedAt: number;
+  submittedAt?: number;
   lastOutputAt: number;
   deadlineAt: number;
   seenDoneMarker: boolean;
+  effectiveOutputSeen: boolean;
+  inputBoxStillContainsPrompt: boolean;
   snapshot: TerminalScreenSnapshot;
 }
 
@@ -31,6 +35,7 @@ export const DEFAULT_COMPLETION_OPTIONS: CompletionDetectorOptions = {
   quietMs: 2_500,
   spinnerStableMs: 1_000,
   checkIntervalMs: 100,
+  submitGraceMs: 5_000,
 };
 
 export class CompletionDetector {
@@ -68,9 +73,24 @@ export class CompletionDetector {
       return { status: "timeout" };
     }
 
+    if (!input.submittedAt) {
+      return undefined;
+    }
+
     const quietEnough = input.now - input.lastOutputAt >= this.options.quietMs;
     const ranLongEnough = input.now - input.startedAt >= this.options.minRunMs;
-    if (quietEnough && ranLongEnough && !screen.spinnerDetected) {
+    if (!input.effectiveOutputSeen) {
+      const graceExpired = input.now - input.submittedAt >= this.options.submitGraceMs;
+      if (graceExpired && (quietEnough || input.inputBoxStillContainsPrompt)) {
+        return {
+          status: "not_submitted",
+          error: "Prompt appears to remain in Claude Code input box; no effective output was observed.",
+        };
+      }
+      return undefined;
+    }
+
+    if (quietEnough && ranLongEnough && !screen.spinnerDetected && input.effectiveOutputSeen) {
       return { status: "completed" };
     }
     return undefined;

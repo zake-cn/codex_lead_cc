@@ -74,11 +74,17 @@ Main completion:
 ```text
 if seen_done_marker:
   completed
+else if permission_prompt_detected:
+  needs_permission
+else if submitted_at + submit_grace_ms passed
+  && effective_output_seen === false:
+    not_submitted
 else if:
   now - last_output_at >= quiet_ms
   && spinner_detected === false
   && permission_prompt_detected === false
-  && now - round_started_at >= min_run_ms:
+  && now - round_started_at >= min_run_ms
+  && effective_output_seen === true:
     completed
 ```
 
@@ -89,9 +95,11 @@ min_run_ms = 1500
 quiet_ms = 2500
 spinner_stable_ms = 1000
 check_interval_ms = 100
+submit_grace_ms = 5000
 ```
 
 Do not use whether Claude Code is input-ready as task completion.
+Input echo alone is not effective output and must not be reported as completed.
 
 ## Permission Loop
 

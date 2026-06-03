@@ -6,6 +6,7 @@ export const BRIDGE_STATUSES = [
     "needs_permission",
     "timeout",
     "interrupted",
+    "not_submitted",
     "exited",
 ];
 export const BRIDGE_RESULT_STATUSES = [
@@ -13,6 +14,7 @@ export const BRIDGE_RESULT_STATUSES = [
     "needs_permission",
     "timeout",
     "interrupted",
+    "not_submitted",
     "exited",
     "busy",
 ];

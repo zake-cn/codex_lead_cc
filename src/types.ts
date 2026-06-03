@@ -23,6 +23,7 @@ export const BRIDGE_STATUSES = [
   "needs_permission",
   "timeout",
   "interrupted",
+  "not_submitted",
   "exited",
 ] as const;
 export type BridgeStatus = (typeof BRIDGE_STATUSES)[number];
@@ -32,6 +33,7 @@ export const BRIDGE_RESULT_STATUSES = [
   "needs_permission",
   "timeout",
   "interrupted",
+  "not_submitted",
   "exited",
   "busy",
 ] as const;

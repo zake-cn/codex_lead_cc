@@ -12,9 +12,9 @@ export interface SessionFile {
     cc_pid?: number;
     created_at: string;
 }
-export declare const BRIDGE_STATUSES: readonly ["idle", "running", "needs_permission", "timeout", "interrupted", "exited"];
+export declare const BRIDGE_STATUSES: readonly ["idle", "running", "needs_permission", "timeout", "interrupted", "not_submitted", "exited"];
 export type BridgeStatus = (typeof BRIDGE_STATUSES)[number];
-export declare const BRIDGE_RESULT_STATUSES: readonly ["completed", "needs_permission", "timeout", "interrupted", "exited", "busy"];
+export declare const BRIDGE_RESULT_STATUSES: readonly ["completed", "needs_permission", "timeout", "interrupted", "not_submitted", "exited", "busy"];
 export type BridgeResultStatus = (typeof BRIDGE_RESULT_STATUSES)[number];
 export declare const BRIDGE_INPUT_KEYS: readonly ["1", "2", "3", "enter", "escape", "ctrl-c"];
 export type BridgeInputKey = (typeof BRIDGE_INPUT_KEYS)[number];

@@ -85,6 +85,14 @@ Permission request:
 <<<CODEX_LEAD_CC_STATUS_END>>>
 ```
 
+No effective output after submit:
+
+```text
+<<<CODEX_LEAD_CC_STATUS>>>
+{"status":"not_submitted","error":"Prompt appears to remain in Claude Code input box; no effective output was observed."}
+<<<CODEX_LEAD_CC_STATUS_END>>>
+```
+
 ## Completion
 
 `<<<CODEX_LEAD_CC_DONE>>>` is only an auxiliary marker. The main completion decision uses PTY screen state:
@@ -93,6 +101,7 @@ Permission request:
 - no loading or spinner in bottom lines
 - no permission menu
 - runtime is at least `min_run_ms`
+- effective output was observed after submit
 
 Defaults:
 
@@ -101,11 +110,13 @@ Defaults:
   "min_run_ms": 1500,
   "quiet_ms": 2500,
   "spinner_stable_ms": 1000,
-  "check_interval_ms": 100
+  "check_interval_ms": 100,
+  "submit_grace_ms": 5000
 }
 ```
 
 Claude Code is usually input-ready, so input readiness is not used as task completion.
+Input echo alone is not effective output; it returns `not_submitted` instead of `completed`.
 
 ## Permission Loop
 
@@ -162,7 +173,8 @@ Session files use version 2:
 - `codex` on PATH
 - `claude` on PATH, or configured via `claude_runtime.command`
 - `git` on PATH
-- `script` on PATH for the fallback PTY implementation when optional `node-pty` is unavailable
+- `node-pty` is a runtime dependency and required for the interactive Claude Code bridge
+- `script` on PATH only for explicit debug fallback with `CODEX_LEAD_CC_ALLOW_PTY_FALLBACK=1`
 
 ## Architecture
 

@@ -6,13 +6,17 @@ export interface CompletionDetectorOptions {
     quietMs: number;
     spinnerStableMs: number;
     checkIntervalMs: number;
+    submitGraceMs: number;
 }
 export interface CompletionCheckInput {
     now: number;
     startedAt: number;
+    submittedAt?: number;
     lastOutputAt: number;
     deadlineAt: number;
     seenDoneMarker: boolean;
+    effectiveOutputSeen: boolean;
+    inputBoxStillContainsPrompt: boolean;
     snapshot: TerminalScreenSnapshot;
 }
 export interface ScreenDetection {
