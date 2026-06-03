@@ -60,10 +60,13 @@ interface ActiveInteraction {
   seenDoneMarker: boolean;
   submittedAt?: number;
   firstOutputAfterSubmitAt?: number;
+  outputAfterStartSeen: boolean;
   effectiveOutputSeen: boolean;
+  lastMeaningfulOutputAt?: number;
   inputEchoDetected: boolean;
   inputEchoOnly: boolean;
   decisionReason: string;
+  cleanEmittedLineKeys: Set<string>;
   submitTimer?: ReturnType<typeof setTimeout>;
   timer: ReturnType<typeof setInterval>;
 }
@@ -221,6 +224,7 @@ class CcBridge {
 
     this.state = "running";
     this.lastOutputAt = now;
+    this.detector.reset();
     const active: ActiveInteraction = {
       request,
       requestId: request.request_id,
@@ -232,10 +236,12 @@ class CcBridge {
       startedAt: now,
       deadlineAt: now + request.timeout_sec * 1_000,
       seenDoneMarker: false,
+      outputAfterStartSeen: false,
       effectiveOutputSeen: false,
       inputEchoDetected: false,
       inputEchoOnly: false,
       decisionReason: "started",
+      cleanEmittedLineKeys: new Set<string>(),
       timer: setInterval(() => this.checkCompletion(), DEFAULT_COMPLETION_OPTIONS.checkIntervalMs),
     };
     active.timer.unref();
@@ -267,10 +273,12 @@ class CcBridge {
       if (chunk.includes(DONE_MARKER)) {
         this.active.seenDoneMarker = true;
         this.active.effectiveOutputSeen = true;
+        this.active.lastMeaningfulOutputAt = Date.now();
         this.active.decisionReason = "done_marker";
       }
-      appendFileSync(this.active.streamFile, chunk, "utf8");
       appendFileSync(this.active.rawStreamFile, chunk, "utf8");
+      const cleanOutput = cleanChunkForClient(this.active, chunk);
+      if (cleanOutput) appendFileSync(this.active.streamFile, cleanOutput, "utf8");
     }
 
     this.refreshScreenDetection();
@@ -322,6 +330,13 @@ class CcBridge {
     this.refreshScreenDetection();
     this.writeState();
     if (result) {
+      if (result.status === "timeout") {
+        this.active.decisionReason = !this.active.effectiveOutputSeen
+          ? "timeout_no_effective_output"
+          : this.spinnerDetected
+            ? "timeout_current_spinner_detected"
+            : "timeout_waiting_for_quiet_window";
+      }
       if (result.status === "not_submitted" && this.active.decisionReason === "enter_sent") {
         this.active.decisionReason = inputBoxStillContainsPrompt ? "input_echo_only" : "no_effective_output";
       }
@@ -376,6 +391,7 @@ class CcBridge {
   ): void {
     const plain = normalizeForDetection(stripAnsi(chunk));
     if (!plain) return;
+    active.outputAfterStartSeen = true;
 
     if (active.submittedAt && !active.firstOutputAfterSubmitAt) {
       active.firstOutputAfterSubmitAt = Date.now();
@@ -395,12 +411,14 @@ class CcBridge {
     if (detection.permissionPromptDetected) {
       active.effectiveOutputSeen = true;
       active.inputEchoOnly = false;
+      active.lastMeaningfulOutputAt = Date.now();
       active.decisionReason = "permission_prompt";
       return;
     }
     if (detection.spinnerDetected) {
       active.effectiveOutputSeen = true;
       active.inputEchoOnly = false;
+      active.lastMeaningfulOutputAt = Date.now();
       active.decisionReason = "spinner_or_loading";
       return;
     }
@@ -409,6 +427,7 @@ class CcBridge {
     if (hasMeaningfulEffectiveText(effectiveText)) {
       active.effectiveOutputSeen = true;
       active.inputEchoOnly = false;
+      active.lastMeaningfulOutputAt = Date.now();
       active.decisionReason = "effective_output";
     }
   }
@@ -456,7 +475,9 @@ class CcBridge {
     writeFileSync(path.join(debugDir, "screen_snapshot_at_finish.txt"), snapshot.text, "utf8");
     writeJsonAtomic(path.join(debugDir, "result.json"), result);
     writeJsonAtomic(path.join(debugDir, "decision.json"), {
+      request_id: requestId,
       status: result.status,
+      reason: result.status,
       seen_done_marker: false,
       effective_output_seen: false,
       input_echo_detected: false,
@@ -464,7 +485,9 @@ class CcBridge {
       spinner_detected: this.spinnerDetected,
       permission_prompt_detected: this.permissionPromptDetected,
       quiet_ms: DEFAULT_COMPLETION_OPTIONS.quietMs,
-      reason: result.status,
+      bottom_lines: snapshot.bottom_lines,
+      raw_tail_contains_esc_to_interrupt: /esc to interrupt/i.test(stripAnsi(snapshot.raw_tail)),
+      raw_tail_ignored_for_spinner: true,
     });
   }
 
@@ -475,8 +498,11 @@ class CcBridge {
   ): Record<string, unknown> {
     const now = Date.now();
     return {
+      request_id: active.requestId,
       status: result.status,
+      reason: active.decisionReason || result.status,
       seen_done_marker: active.seenDoneMarker,
+      output_after_start_seen: active.outputAfterStartSeen,
       effective_output_seen: active.effectiveOutputSeen,
       input_echo_detected: active.inputEchoDetected,
       input_echo_only: active.inputEchoOnly || (!active.effectiveOutputSeen && active.inputEchoDetected),
@@ -484,14 +510,20 @@ class CcBridge {
       permission_prompt_detected: this.permissionPromptDetected,
       quiet_ms: DEFAULT_COMPLETION_OPTIONS.quietMs,
       submit_grace_ms: DEFAULT_COMPLETION_OPTIONS.submitGraceMs,
+      bottom_lines: snapshot.bottom_lines,
+      raw_tail_contains_esc_to_interrupt: /esc to interrupt/i.test(stripAnsi(snapshot.raw_tail)),
+      raw_tail_ignored_for_spinner: true,
       runtime_ms: now - active.startedAt,
       submitted_after_ms: active.submittedAt ? now - active.submittedAt : undefined,
       first_output_after_submit_ms:
         active.submittedAt && active.firstOutputAfterSubmitAt
           ? active.firstOutputAfterSubmitAt - active.submittedAt
           : undefined,
+      last_meaningful_output_after_submit_ms:
+        active.submittedAt && active.lastMeaningfulOutputAt
+          ? active.lastMeaningfulOutputAt - active.submittedAt
+          : undefined,
       input_box_still_contains_prompt: this.inputBoxStillContainsPrompt(active, snapshot),
-      reason: active.decisionReason || result.status,
       error: result.error,
     };
   }
@@ -512,7 +544,7 @@ class CcBridge {
       cc_pid: this.pty.pid,
       session_id: this.session.session_id,
       project_label: path.basename(this.session.project_path) || this.session.project_path,
-      last_output: trimStatusOutput(snapshot.text || this.lastOutput),
+      last_output: trimStatusOutput(cleanStatusText(snapshot.text || this.lastOutput)),
       bottom_lines: snapshot.bottom_lines,
       spinner_detected: this.spinnerDetected,
       permission_prompt_detected: this.permissionPromptDetected,
@@ -738,6 +770,61 @@ function hasMeaningfulEffectiveText(value: string): boolean {
   if (/^[|/\\\-.>_$#\s]+$/.test(cleaned)) return false;
   const meaningfulChars = cleaned.match(/[\p{L}\p{N}]/gu)?.length ?? 0;
   return meaningfulChars >= EFFECTIVE_OUTPUT_MIN_CHARS;
+}
+
+function cleanChunkForClient(active: ActiveInteraction, chunk: string): string {
+  const stripped = stripAnsi(chunk)
+    .replace(/\r/g, "\n")
+    .replace(/\u001b\[[?]2004[hl]/g, "");
+  const out: string[] = [];
+  for (const rawLine of stripped.split("\n")) {
+    const line = cleanClientLine(rawLine);
+    if (!line) continue;
+    if (isInputEcho(active.sentPromptText, line)) continue;
+    if (isTuiNoiseLine(line)) continue;
+    const key = normalizeClientLine(line);
+    if (!key || active.cleanEmittedLineKeys.has(key)) continue;
+    active.cleanEmittedLineKeys.add(key);
+    out.push(line);
+  }
+  return out.length > 0 ? `${out.join("\n")}\n` : "";
+}
+
+function cleanStatusText(value: string): string {
+  const lines = stripAnsi(value)
+    .replace(/\r/g, "\n")
+    .split("\n")
+    .map(cleanClientLine)
+    .filter((line) => line && !isTuiNoiseLine(line));
+  return lines.slice(-20).join("\n");
+}
+
+function cleanClientLine(value: string): string {
+  return value
+    .replace(/[\u001b\x9b][^\n]*/g, "")
+    .replace(/^[│┃]\s?/u, "")
+    .replace(/\s?[│┃]$/u, "")
+    .replace(/\s+$/g, "")
+    .trim();
+}
+
+function normalizeClientLine(value: string): string {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function isTuiNoiseLine(line: string): boolean {
+  const normalized = normalizeClientLine(line);
+  if (!normalized) return true;
+  if (/^[╭╮╰╯│─┌┐└┘├┤┬┴┼═║╔╗╚╝+\-\s]+$/u.test(normalized)) return true;
+  if (/^(?:bash|sh|zsh)-?\d*(?:\.\d+)*[$#]\s*$/i.test(normalized)) return true;
+  if (/^(?:bash|sh|zsh)-?\d*(?:\.\d+)*[$#]\s+\S/i.test(normalized)) return true;
+  if (/^\W*(?:esc to interrupt|press esc|ctrl-c to|\? for shortcuts)\b/i.test(normalized)) return true;
+  if (/\b(?:esc to interrupt|press esc|ctrl-c to|\? for shortcuts|auto-accept edits|bypass permissions)\b/i.test(normalized)) {
+    return true;
+  }
+  if (/^[|/\\\-⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏●✶✽·\s]+$/u.test(normalized)) return true;
+  if (/^(?:thinking|loading|processing|waiting|working)\b/i.test(normalized)) return true;
+  return false;
 }
 
 function isProcessAlive(pid: number): boolean {

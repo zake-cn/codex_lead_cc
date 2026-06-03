@@ -43,6 +43,10 @@ export class CompletionDetector {
 
   constructor(private readonly options = DEFAULT_COMPLETION_OPTIONS) {}
 
+  reset(): void {
+    this.spinnerLastSeenAt = 0;
+  }
+
   inspect(snapshot: TerminalScreenSnapshot, now = Date.now()): ScreenDetection {
     const spinnerVisible = detectSpinner(snapshot);
     if (spinnerVisible) {
@@ -120,19 +124,32 @@ export function detectPermissionPrompt(snapshot: TerminalScreenSnapshot): {
 }
 
 export function detectSpinner(snapshot: TerminalScreenSnapshot): boolean {
-  const bottom = snapshot.bottom_lines.join("\n");
-  const raw = stripAnsi(snapshot.raw_tail).slice(-2_000);
+  const bottom = currentBottomText(snapshot);
   const last = snapshot.bottom_lines.at(-1)?.trim() ?? "";
   return (
     /\b(thinking|loading|processing|waiting|working)\b/i.test(bottom) ||
-    /esc to interrupt|press esc|ctrl-c to/i.test(`${bottom}\n${raw}`) ||
-    /[\u2800-\u28ff\u25d0-\u25ff]/u.test(`${bottom}\n${raw}`) ||
+    /esc to interrupt|press esc|ctrl-c to/i.test(bottom) ||
+    /[\u2800-\u28ff\u25d0-\u25ff]/u.test(bottom) ||
     /(^|\s)[|/\\-]\s*$/.test(last)
   );
 }
 
 function visibleText(snapshot: TerminalScreenSnapshot): string {
-  const screenTail = snapshot.text.slice(-8_000);
-  const rawTail = stripAnsi(snapshot.raw_tail).slice(-8_000);
-  return `${screenTail}\n${rawTail}`;
+  return currentBottomText(snapshot, 8_000);
+}
+
+function currentBottomText(snapshot: TerminalScreenSnapshot, maxChars = 2_000): string {
+  const current = snapshot.bottom_lines
+    .slice(-5)
+    .filter((line) => !looksLikeInputEchoLine(line))
+    .join("\n");
+  return stripAnsi(current).slice(-maxChars);
+}
+
+function looksLikeInputEchoLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  if (/^(?:bash|sh|zsh)-?\d*(?:\.\d+)*[$#]\s+/i.test(trimmed)) return true;
+  if (/^>\s+\S/.test(trimmed)) return true;
+  return false;
 }

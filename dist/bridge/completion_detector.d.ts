@@ -29,6 +29,7 @@ export declare class CompletionDetector {
     private readonly options;
     private spinnerLastSeenAt;
     constructor(options?: CompletionDetectorOptions);
+    reset(): void;
     inspect(snapshot: TerminalScreenSnapshot, now?: number): ScreenDetection;
     check(input: CompletionCheckInput): BridgeCommandResult | undefined;
 }
