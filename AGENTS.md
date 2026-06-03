@@ -1,30 +1,23 @@
 # codex_lead_cc (project docs)
 
 > Documentation only. The actual supervisor rules Codex loads are written to
-> `CLAUDE.md` in supervisor_home by the wrapper on first launch.
+> `CLAUDE.md`, `AGENTS.md`, and `MEMORY.md` in supervisor_home.
 
-## Architecture
+## Final Architecture
 
-```
-codex_lead_cc wrapper
-  -> captures terminal env
-  -> creates session
-  -> starts one local CC Bridge
-  -> starts Codex Lead (cwd = supervisor_home, reads CLAUDE.md)
-Codex Lead
-  -> codex_lead_cc cc-send / cc-input / cc-status
-  -> CC Bridge socket for this session only
-  -> one long-lived Claude Code PTY (cwd = real project)
-  -> streamed output + status footer
+```text
+User starts codex_lead_cc in a real project directory
+  -> wrapper creates supervisor_home and session
+  -> wrapper captures local Claude Code env
+  -> wrapper starts one CC Bridge process
+  -> bridge starts one long-lived Claude Code PTY with cwd = real project
+  -> wrapper starts Codex with cwd = supervisor_home
+  -> Codex uses cc-send / cc-input / cc-status
 ```
 
-ALL runtime files (sessions, artifacts, env files, bridge sockets) live inside
-supervisor_home under `.codex_lead_cc_runtime/`. Nothing is written outside
-supervisor_home by Codex or the bridge runtime.
+Claude Code is the only process that enters the real project directory.
 
-## Commands
-
-The final bridge commands are:
+## Main Commands
 
 ```bash
 codex_lead_cc cc-send "prompt"
@@ -35,69 +28,57 @@ codex_lead_cc cc-input --key 1
 codex_lead_cc cc-status
 ```
 
-Do not use MCP, subagents, delegate, submit, daemon, TaskContract,
-OperationRequest, worker pools, queues, or multiple Claude Code instances.
+Do not use MCP, subagents, delegate, submit, daemon, workers, queues, TaskFile,
+OperationRequest, TaskContract, or PermissionContract in the main path.
+
+## File IPC
+
+Each session owns:
+
+```text
+session_dir/
+  bridge/
+    inbox/
+    streams/
+    results/
+    state.json
+    bridge.log
+```
+
+`cc-send` and `cc-input` create request files in `bridge/inbox`, stream output
+from `bridge/streams/<request_id>.log`, and finish when
+`bridge/results/<request_id>.json` appears.
+
+`cc-status` only reads `bridge/state.json`.
 
 ## Session Isolation
 
-`cc-send`, `cc-input`, and `cc-status` must locate the bridge only through:
+Bridge location comes from the current Codex process environment:
 
 ```text
-CODEX_LEAD_CC_BRIDGE_SOCKET
-CODEX_LEAD_CC_SESSION_FILE
 CODEX_LEAD_CC_SESSION_ID
+CODEX_LEAD_CC_SESSION_FILE
+CODEX_LEAD_CC_BRIDGE_DIR
+CODEX_LEAD_CC_BRIDGE_STATE
+CODEX_LEAD_CC_BIN
 ```
 
-If those variables are missing, fail with:
-
-```text
-No active codex_lead_cc bridge found in this process environment.
-```
-
-No global recent-session guessing.
-
-## cc-send
-
-`codex_lead_cc cc-send "prompt"` or stdin reads natural-language text, writes it
-to the current long-lived Claude Code PTY, streams PTY output to stdout, and
-stops only on:
-
-- `completed`
-- `needs_permission`
-- `timeout`
-- `interrupted`
-- `exited`
-
-`cc-send` ending does not mean Claude Code exited. The PTY stays alive.
-
-## cc-input
-
-`codex_lead_cc cc-input --key <key>` writes one key to the same PTY:
-
-- `1` -> `1\r`
-- `2` -> `2\r`
-- `3` -> `3\r`
-- `enter` -> `\r`
-- `escape` -> `\x1b`
-- `ctrl-c` -> `\x03`
-
-Then it streams output and stops on the same result statuses. The PTY stays
-alive.
+No global recent-session guessing. No active_session main path.
 
 ## Completion
 
-Do not primarily rely on `<<<CODEX_LEAD_CC_DONE>>>`. It is auxiliary only.
+`<<<CODEX_LEAD_CC_DONE>>>` is auxiliary only.
 
-Main completion is based on terminal screen state:
+Main completion:
 
 ```text
 if seen_done_marker:
   completed
 else if:
   now - last_output_at >= quiet_ms
-  && no spinner/loading in bottom lines
-  && no permission prompt
-  && runtime >= min_run_ms:
+  && spinner_detected === false
+  && permission_prompt_detected === false
+  && now - round_started_at >= min_run_ms:
     completed
 ```
 
@@ -110,16 +91,11 @@ spinner_stable_ms = 1000
 check_interval_ms = 100
 ```
 
-Claude Code is basically always input-ready, so input readiness must not be used
-as task completion.
+Do not use whether Claude Code is input-ready as task completion.
 
 ## Permission Loop
 
-Detect permission menus that show numbered choices (`1.`, `2.`, `3.`), Yes/No,
-`don't ask again`, and command request text such as `wants to run`, `run
-command`, or `execute command`.
-
-When detected, append:
+Permission menu detection returns:
 
 ```text
 <<<CODEX_LEAD_CC_STATUS>>>
@@ -127,18 +103,28 @@ When detected, append:
 <<<CODEX_LEAD_CC_STATUS_END>>>
 ```
 
-Then exit the current `cc-send` or `cc-input` client. The bridge state remains
-`needs_permission`; the Claude Code PTY does not exit.
+User option mapping:
 
-User option handling:
-
-- option 1: run `codex_lead_cc cc-input --key 1`
+- option 1: `codex_lead_cc cc-input --key 1`
 - option 2: Codex records reusable policy for itself, but still runs
   `codex_lead_cc cc-input --key 1`
-- option 3: run `codex_lead_cc cc-input --key 3`
+- option 3: `codex_lead_cc cc-input --key 3`
 
 Only send `--key 2` when the user explicitly asks Claude Code itself to stop
 asking.
 
 Human grants reusable policy to Codex. Codex grants one-shot approval to Claude
 Code.
+
+## Supervisor Migration
+
+Normal startup creates missing supervisor files but does not overwrite existing
+ones. Stale rules produce:
+
+```text
+Supervisor rules are stale. Run: codex_lead_cc migrate-supervisor
+```
+
+`codex_lead_cc migrate-supervisor` force-overwrites `CLAUDE.md`, `AGENTS.md`,
+and `MEMORY.md` in supervisor_home and writes
+`.codex_lead_cc_supervisor_version.json`.

@@ -90,7 +90,7 @@ export function runUpdate(options: UpdateOptions, repoRoot: string): number {
     }
   }
 
-  process.stdout.write("Update completed.\nRun: codex_lead_cc --doctor\n");
+  process.stdout.write("Update completed.\nMigrating supervisor files with: codex_lead_cc migrate-supervisor\n");
   return 0;
 }
 

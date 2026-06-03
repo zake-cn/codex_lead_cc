@@ -102,12 +102,11 @@ export function detectPermissionPrompt(snapshot: TerminalScreenSnapshot): {
 export function detectSpinner(snapshot: TerminalScreenSnapshot): boolean {
   const bottom = snapshot.bottom_lines.join("\n");
   const raw = stripAnsi(snapshot.raw_tail).slice(-2_000);
-  const text = `${bottom}\n${raw}`;
   const last = snapshot.bottom_lines.at(-1)?.trim() ?? "";
   return (
-    /\b(thinking|loading|processing|waiting|working)\b/i.test(text) ||
-    /esc to interrupt|press esc|ctrl-c to/i.test(text) ||
-    /[\u2800-\u28ff\u25d0-\u25ff]/u.test(text) ||
+    /\b(thinking|loading|processing|waiting|working)\b/i.test(bottom) ||
+    /esc to interrupt|press esc|ctrl-c to/i.test(`${bottom}\n${raw}`) ||
+    /[\u2800-\u28ff\u25d0-\u25ff]/u.test(`${bottom}\n${raw}`) ||
     /(^|\s)[|/\\-]\s*$/.test(last)
   );
 }

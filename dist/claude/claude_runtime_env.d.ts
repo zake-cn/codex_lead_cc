@@ -47,7 +47,7 @@ export declare function buildFinalClaudeEnv(args: {
     baseEnv: NodeJS.ProcessEnv;
     loadedEnv: Record<string, string>;
 }): NodeJS.ProcessEnv;
-export declare function buildClaudeWorkerEnv(baseEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+export declare function buildClaudePtyEnv(baseEnv?: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
 export declare function getClaudeRuntimeCommand(baseEnv?: NodeJS.ProcessEnv): {
     command: string;
     argsPrefix: string[];

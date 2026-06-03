@@ -159,8 +159,8 @@ export function loadClaudeRuntimeEnvFileIntoProcess(envFile = process.env[CODEX_
 export function buildFinalClaudeEnv(args) {
     return { ...args.baseEnv, ...args.loadedEnv };
 }
-// ── Claude worker env (strips internal runtime keys) ──
-export function buildClaudeWorkerEnv(baseEnv = process.env) {
+// ── Claude PTY env (strips internal runtime keys) ──
+export function buildClaudePtyEnv(baseEnv = process.env) {
     const env = { ...baseEnv };
     delete env[CLAUDE_COMMAND_ENV];
     delete env[CLAUDE_ARGS_PREFIX_ENV];

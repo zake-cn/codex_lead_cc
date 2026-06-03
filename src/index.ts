@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 /**
- * codex_lead_cc — Codex Lead Supervisor Launcher
+ * codex_lead_cc — Codex-to-Claude-Code Interactive Bridge
  *
  *   codex_lead_cc [codex args...]     Start supervisor session
  *   codex_lead_cc cc-send ...         Send prompt to the current CC Bridge
  *   codex_lead_cc cc-input ...        Send key input to the current CC Bridge
  *   codex_lead_cc cc-status           Read current CC Bridge status
+ *   codex_lead_cc migrate-supervisor  Rewrite supervisor rules
  *   codex_lead_cc --doctor            Environment diagnostics
  *   codex_lead_cc update [...]        Self-update
  *   codex_lead_cc config <action>     Manage user config

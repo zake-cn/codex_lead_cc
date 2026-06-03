@@ -9,7 +9,7 @@ export function codexLeadHome() {
 export function userConfigPath() {
     return path.join(codexLeadHome(), "config.json");
 }
-// Default runtime_home is now INSIDE supervisor_home so subagents can write.
+// Default runtime_home is inside supervisor_home so Codex can access session files.
 function defaultRuntimeHome(supervisorHome) {
     return path.join(supervisorHome, ".codex_lead_cc_runtime");
 }
@@ -118,7 +118,7 @@ export function assertPathInside(child, parent, label) {
 }
 export function runtimeHomeWarning(config) {
     if (!isPathInside(config.runtime_home, config.supervisor_home)) {
-        return (`runtime_home is outside supervisor_home and may not be writable from Codex subagents.\n` +
+        return (`runtime_home is outside supervisor_home and may not be writable from the Codex session.\n` +
             `  runtime_home: ${config.runtime_home}\n` +
             `  supervisor_home: ${config.supervisor_home}\n` +
             `  Consider resetting config: codex_lead_cc config reset`);

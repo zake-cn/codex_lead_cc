@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs";
-import net from "node:net";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,87 +24,34 @@ import {
   parseUpdateArgs,
   runUpdate,
 } from "./update.js";
+import {
+  ensureSupervisorFiles,
+  formatSupervisorMigrationSummary,
+  migrateSupervisorFiles,
+} from "../supervisor.js";
 import type { SessionFile } from "../types.js";
 
 const wrapperDir = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(wrapperDir, "..", "..");
 
-// ── Default CLAUDE.md ──
-
-const DEFAULT_CLAUDE_MD = [
-  "# codex_lead_cc Supervisor Rules",
-  "",
-  "You are Codex Lead. Your cwd is supervisor_home.",
-  "You must NOT read, write, or run commands inside the real project directory.",
-  "Only Claude Code, running in the long-lived local CC Bridge PTY, may touch the project.",
-  "",
-  "ALL runtime files (sessions, artifacts, env files, bridge socket) are INSIDE supervisor_home.",
-  "Do NOT create files under ~/.codex_lead_cc/runtime — that path is no longer used.",
-  "",
-  "## Environment",
-  "",
-  "- CODEX_LEAD_CC_BRIDGE_SOCKET — absolute path to the bridge socket for this Codex conversation",
-  "- CODEX_LEAD_CC_SESSION_FILE — absolute path to session.json inside supervisor_home",
-  "- CODEX_LEAD_CC_SESSION_ID — current session id",
-  "- CODEX_LEAD_CC_BIN — absolute path to the codex_lead_cc binary",
-  "",
-  "## Allowed Commands",
-  "",
-  "Use only these bridge commands:",
-  "",
-  "```bash",
-  'codex_lead_cc cc-send "prompt"',
-  "codex_lead_cc cc-send <<'EOF'",
-  "multi-line prompt",
-  "EOF",
-  "codex_lead_cc cc-input --key 1",
-  "codex_lead_cc cc-status",
-  "```",
-  "",
-  "Do NOT use MCP, subagents, delegate, submit, daemon, TaskContract, OperationRequest, worker pools, queues, or multiple Claude Code instances.",
-  "",
-  "## How to Work",
-  "",
-  "Send natural-language instructions to Claude Code through cc-send.",
-  "cc-send streams the Claude Code PTY output to stdout and ends only when the bridge reports completed, needs_permission, timeout, interrupted, or exited.",
-  "cc-send ending does NOT mean Claude Code exited. The Claude Code PTY stays alive for the next instruction.",
-  "cc-input sends one key to the same PTY, streams output, and also leaves Claude Code running.",
-  "cc-status only reads bridge state; it must not drive execution.",
-  "",
-  "The bridge completion decision is based on PTY screen state:",
-  "- recent quiet output window",
-  "- no bottom-screen loading/spinner",
-  "- no permission menu",
-  "- optional <<<CODEX_LEAD_CC_DONE>>> marker as an auxiliary signal",
-  "",
-  "Do NOT decide task completion from whether Claude Code is accepting input. Claude Code is usually input-ready even when the task is not done.",
-  "",
-  "## Permission Loop",
-  "",
-  "When cc-send or cc-input prints:",
-  "",
-  "```text",
-  "<<<CODEX_LEAD_CC_STATUS>>>",
-  "{\"status\":\"needs_permission\",\"suggested_keys\":[\"1\",\"2\",\"3\"]}",
-  "<<<CODEX_LEAD_CC_STATUS_END>>>",
-  "```",
-  "",
-  "Ask the human which option to grant.",
-  'If the human chooses option 1, run: codex_lead_cc cc-input --key 1',
-  'If the human chooses option 2, record that Codex may handle similar requests automatically, but still run: codex_lead_cc cc-input --key 1',
-  'Only run codex_lead_cc cc-input --key 2 when the human explicitly asks Claude Code itself to stop asking.',
-  'If the human chooses option 3, run: codex_lead_cc cc-input --key 3',
-  "",
-  "Human grants reusable policy to Codex. Codex grants one-shot approval to Claude Code.",
-].join("\n");
-
 // ── main ──
 
 async function main(): Promise<void> {
   const rawArgs = process.argv.slice(2);
+  const codexLeadBin = process.argv[1] || path.join(wrapperDir, "codex_lead_cc.js");
 
   if (rawArgs[0] === "update") {
-    process.exitCode = runUpdate(parseUpdateArgs(rawArgs.slice(1)), repoRoot);
+    const updateOptions = parseUpdateArgs(rawArgs.slice(1));
+    const updateCode = runUpdate(updateOptions, repoRoot);
+    if (updateCode !== 0 || updateOptions.dryRun) {
+      process.exitCode = updateCode;
+      return;
+    }
+    const migration = spawnSync(process.execPath, [codexLeadBin, "migrate-supervisor"], {
+      stdio: "inherit",
+      env: process.env,
+    });
+    process.exitCode = migration.status ?? 1;
     return;
   }
   if (rawArgs[0] === "config") {
@@ -125,6 +71,13 @@ async function main(): Promise<void> {
   if (rawArgs[0] === "cc-status") {
     const { ccStatusMain } = await import("../bridge/cc_client.js");
     await ccStatusMain(rawArgs.slice(1));
+    return;
+  }
+  if (rawArgs[0] === "migrate-supervisor") {
+    const userConfig = await loadOrCreateUserConfig();
+    await ensureUserConfigDirectories(userConfig);
+    const summary = migrateSupervisorFiles(userConfig.supervisor_home);
+    process.stdout.write(formatSupervisorMigrationSummary(summary));
     return;
   }
   if (rawArgs[0] === "__bridge") {
@@ -153,7 +106,10 @@ async function main(): Promise<void> {
   const rtw = runtimeHomeWarning(userConfig);
   if (rtw) process.stderr.write(`Warning: ${rtw}\n`);
 
-  ensureClaudeMd(userConfig.supervisor_home);
+  const supervisor = ensureSupervisorFiles(userConfig.supervisor_home);
+  if (supervisor.stale) {
+    process.stderr.write("Supervisor rules are stale. Run: codex_lead_cc migrate-supervisor\n");
+  }
   const session = createSession(userConfig);
 
   const claudeEnv = prepareClaudeRuntimeEnvFile({
@@ -168,20 +124,18 @@ async function main(): Promise<void> {
   };
   writeSessionFile(session.filePath, sessionData);
 
-  const codexLeadBin = process.argv[1] || path.join(wrapperDir, "codex_lead_cc.js");
-
   assertReadyToLaunch(userConfig);
 
   const bridge = startCcBridge({
     sessionFile: session.filePath,
-    sessionDir: session.sessionDir,
+    bridgeDir: session.data.bridge_dir,
     supervisorHome: userConfig.supervisor_home,
   });
   if (bridge.pid) {
     sessionData.bridge_pid = bridge.pid;
     writeSessionFile(session.filePath, sessionData);
   }
-  const bridgeReady = await waitForBridgeReady(session.data.bridge_socket, 5_000);
+  const bridgeReady = await waitForBridgeReady(session.data.bridge_state_file, session.sessionId, 5_000);
   if (!bridgeReady) {
     process.stderr.write(`Warning: CC bridge was not ready within 5s. See ${bridge.logPath}\n`);
   }
@@ -189,9 +143,10 @@ async function main(): Promise<void> {
   const codexEnv: Record<string, string> = {
     ...process.env as Record<string, string>,
     PWD: userConfig.supervisor_home,
-    CODEX_LEAD_CC_BRIDGE_SOCKET: session.data.bridge_socket,
     CODEX_LEAD_CC_SESSION_ID: session.sessionId,
     CODEX_LEAD_CC_SESSION_FILE: session.filePath,
+    CODEX_LEAD_CC_BRIDGE_DIR: session.data.bridge_dir,
+    CODEX_LEAD_CC_BRIDGE_STATE: session.data.bridge_state_file,
     CODEX_LEAD_CC_SUPERVISOR_HOME: userConfig.supervisor_home,
     CODEX_LEAD_CC_BIN: codexLeadBin,
   };
@@ -222,31 +177,37 @@ function createSession(userConfig: EffectiveCodexLeadUserConfig): SessionInfo {
   const sessionId = `session_${randomUUID().slice(0, 8)}`;
   const projectPath = process.cwd();
   const sessionDir = path.join(userConfig.runtime_home, "sessions", sessionId);
-  const taskDir = path.join(sessionDir, "tasks");
   const artifactRoot = path.join(sessionDir, "artifacts");
-  const bridgeSocket = path.join(sessionDir, "cc_bridge.sock");
+  const bridgeDir = path.join(sessionDir, "bridge");
+  const bridgeInbox = path.join(bridgeDir, "inbox");
+  const bridgeStreams = path.join(bridgeDir, "streams");
+  const bridgeResults = path.join(bridgeDir, "results");
+  const bridgeStateFile = path.join(bridgeDir, "state.json");
 
   // ALL runtime paths MUST be inside supervisor_home
   assertPathInside(sessionDir, userConfig.supervisor_home, "sessionDir");
-  assertPathInside(taskDir, userConfig.supervisor_home, "taskDir");
   assertPathInside(artifactRoot, userConfig.supervisor_home, "artifactRoot");
-  assertPathInside(bridgeSocket, userConfig.supervisor_home, "bridgeSocket");
+  assertPathInside(bridgeDir, userConfig.supervisor_home, "bridgeDir");
+  assertPathInside(bridgeStateFile, userConfig.supervisor_home, "bridgeStateFile");
 
-  mkdirSync(taskDir, { recursive: true });
   mkdirSync(artifactRoot, { recursive: true });
+  mkdirSync(bridgeInbox, { recursive: true });
+  mkdirSync(bridgeStreams, { recursive: true });
+  mkdirSync(bridgeResults, { recursive: true });
 
   return {
     sessionId,
     sessionDir,
     filePath: path.join(sessionDir, "session.json"),
     data: {
-      version: 1,
+      version: 2,
       session_id: sessionId,
       project_path: projectPath,
       supervisor_home: userConfig.supervisor_home,
-      task_dir: taskDir,
+      session_dir: sessionDir,
       artifact_root: artifactRoot,
-      bridge_socket: bridgeSocket,
+      bridge_dir: bridgeDir,
+      bridge_state_file: bridgeStateFile,
       created_at: new Date().toISOString(),
     },
   };
@@ -262,10 +223,10 @@ interface StartedBridge {
 
 function startCcBridge(args: {
   sessionFile: string;
-  sessionDir: string;
+  bridgeDir: string;
   supervisorHome: string;
 }): StartedBridge {
-  const logPath = path.join(args.sessionDir, "cc_bridge.log");
+  const logPath = path.join(args.bridgeDir, "bridge.log");
   const logFd = openSync(logPath, "a");
   const bridgeEntry = path.resolve(wrapperDir, "..", "bridge", "cc_bridge.js");
   const bridgeArgs = existsSync(bridgeEntry)
@@ -291,13 +252,13 @@ function startCcBridge(args: {
   return { pid: child.pid, logPath, process: child };
 }
 
-async function waitForBridgeReady(socketPath: string, timeoutMs: number): Promise<boolean> {
+async function waitForBridgeReady(stateFile: string, sessionId: string, timeoutMs: number): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (await canConnect(socketPath)) return true;
+    if (isBridgeStateReady(stateFile, sessionId)) return true;
     await sleep(100);
   }
-  return canConnect(socketPath);
+  return isBridgeStateReady(stateFile, sessionId);
 }
 
 function stopCcBridge(bridge: StartedBridge): void {
@@ -309,30 +270,14 @@ function stopCcBridge(bridge: StartedBridge): void {
   }
 }
 
-function canConnect(socketPath: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    if (!existsSync(socketPath)) {
-      resolve(false);
-      return;
-    }
-    const client = net.createConnection(socketPath);
-    let buffer = "";
-    const done = (ok: boolean) => {
-      client.removeAllListeners();
-      client.destroy();
-      resolve(ok);
-    };
-    client.setEncoding("utf8");
-    client.once("connect", () => {
-      client.write(`${JSON.stringify({ type: "status" })}\n`);
-    });
-    client.on("data", (chunk: string) => {
-      buffer += chunk;
-      if (buffer.includes("\"type\":\"status\"")) done(true);
-    });
-    client.once("error", () => done(false));
-    client.setTimeout(250, () => done(false));
-  });
+function isBridgeStateReady(stateFile: string, sessionId: string): boolean {
+  if (!existsSync(stateFile)) return false;
+  try {
+    const state = JSON.parse(readFileSync(stateFile, "utf8")) as { session_id?: unknown; bridge_pid?: unknown };
+    return state.session_id === sessionId && typeof state.bridge_pid === "number";
+  } catch {
+    return false;
+  }
 }
 
 function writeSessionFile(sessionFile: string, session: SessionFile): void {
@@ -365,20 +310,6 @@ function parseArgs(args: string[]): { doctor: boolean; codexArgs: string[] } {
   return { doctor, codexArgs };
 }
 
-function ensureClaudeMd(supervisorHome: string): void {
-  const p = path.join(supervisorHome, "CLAUDE.md");
-  if (!existsSync(p)) {
-    mkdirSync(supervisorHome, { recursive: true });
-    writeFileSync(p, DEFAULT_CLAUDE_MD, "utf8");
-    return;
-  }
-
-  const existing = readFileSync(p, "utf8");
-  if (existing.startsWith("# codex_lead_cc Supervisor Rules")) {
-    writeFileSync(p, DEFAULT_CLAUDE_MD, "utf8");
-  }
-}
-
 function assertReadyToLaunch(userConfig: EffectiveCodexLeadUserConfig): void {
   if (!checkCommand("codex").ok) throw new Error("codex command is not available on PATH.");
   if (!checkRuntimeCommand(userConfig.claude_runtime.command).ok) {
@@ -399,8 +330,9 @@ function printDoctor(userConfig: EffectiveCodexLeadUserConfig): void {
   } catch { /* ignore */ }
 
   const rtInside = isPathInside(userConfig.runtime_home, userConfig.supervisor_home);
-  const taskProbe = writeProbe(path.join(userConfig.runtime_home, "sessions", ".doctor_probe"));
+  const sessionProbe = writeProbe(path.join(userConfig.runtime_home, "sessions", ".doctor_probe"));
   const artifactProbe = writeProbe(path.join(userConfig.runtime_home, "sessions", ".doctor_probe"));
+  const bridgeProbe = writeProbe(path.join(userConfig.runtime_home, "sessions", ".doctor_probe", "bridge"));
   const envProbe = writeProbe(path.join(userConfig.runtime_home, "sessions", ".doctor_probe"));
 
   const checks = [
@@ -411,8 +343,9 @@ function printDoctor(userConfig: EffectiveCodexLeadUserConfig): void {
     { name: "supervisor_home", ok: existsSync(userConfig.supervisor_home), detail: userConfig.supervisor_home },
     { name: "runtime_home", ok: existsSync(userConfig.runtime_home), detail: userConfig.runtime_home },
     { name: "runtime_home_inside_supervisor_home", ok: rtInside, detail: rtInside ? "ok" : `WARNING: runtime_home is outside supervisor_home — bridge writes may fail. Run: codex_lead_cc config reset` },
-    { name: "task_dir_writable", ok: taskProbe.ok, detail: taskProbe.detail },
+    { name: "session_dir_writable", ok: sessionProbe.ok, detail: sessionProbe.detail },
     { name: "artifact_root_writable", ok: artifactProbe.ok, detail: artifactProbe.detail },
+    { name: "bridge_dir_writable", ok: bridgeProbe.ok, detail: bridgeProbe.detail },
     { name: "env_file_writable", ok: envProbe.ok, detail: envProbe.detail },
     { name: "codex_lead_cc_config", ok: existsSync(userConfig.config_path), detail: userConfig.config_path },
     { name: "claude_md", ok: existsSync(path.join(userConfig.supervisor_home, "CLAUDE.md")), detail: path.join(userConfig.supervisor_home, "CLAUDE.md") },
@@ -467,18 +400,19 @@ async function runConfigCommand(args: string[]): Promise<void> {
 function shellQuote(v: string): string { return `'${v.replace(/'/g, "'\\''")}'`; }
 
 function printHelp(): void {
-  process.stdout.write(`codex_lead_cc — Codex Lead Supervisor Launcher
+  process.stdout.write(`codex_lead_cc — Codex-to-Claude-Code Interactive Bridge
 
 Usage:
   codex_lead_cc [--doctor] [codex args...]
   codex_lead_cc cc-send [--timeout-sec 120] "prompt"
   codex_lead_cc cc-input --key <1|2|3|enter|escape|ctrl-c>
   codex_lead_cc cc-status
+  codex_lead_cc migrate-supervisor
   codex_lead_cc update [--from <git-url>] [--dry-run]
   codex_lead_cc config show | reset | path
 
 Supervisor behavior is loaded from CLAUDE.md in supervisor_home.
-cc-send, cc-input, and cc-status require an active CODEX_LEAD_CC_BRIDGE_SOCKET environment.
+cc-send, cc-input, and cc-status require an active codex_lead_cc Codex session environment.
 `);
 }
 

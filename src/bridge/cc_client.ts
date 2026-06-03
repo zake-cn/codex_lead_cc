@@ -1,5 +1,12 @@
-import { readFileSync } from "node:fs";
-import net, { type Socket } from "node:net";
+import { randomUUID } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { stdin as input, stdout } from "node:process";
 
@@ -10,23 +17,38 @@ import type {
   SessionFile,
 } from "../types.js";
 import { BRIDGE_INPUT_KEYS } from "../types.js";
-import { encodeFrame, parseFrame, type BridgeRequest, type BridgeResponse } from "./protocol.js";
 
 const NO_ACTIVE_BRIDGE =
-  "No active codex_lead_cc bridge found in this process environment.";
+  "No active codex_lead_cc bridge found in this process environment.\n" +
+  "This command must be run inside a Codex session launched by codex_lead_cc.";
 
 interface BridgeEnv {
-  socketPath: string;
   sessionFile: string;
   sessionId: string;
+  bridgeDir: string;
+  stateFile: string;
+  inboxDir: string;
+  streamsDir: string;
+  resultsDir: string;
+}
+
+interface FileBridgeRequest {
+  type: "send" | "input";
+  request_id: string;
+  prompt?: string;
+  key?: BridgeInputKey;
+  timeout_sec: number;
+  created_at: string;
 }
 
 export async function ccSendMain(rawArgs: string[]): Promise<void> {
   const options = await parseSendArgs(rawArgs);
-  const result = await streamBridgeRequest({
+  const result = await runFileBridgeRequest({
     type: "send",
+    request_id: makeRequestId(),
     prompt: options.prompt,
     timeout_sec: options.timeoutSec,
+    created_at: new Date().toISOString(),
   });
   writeStatusFooter(result);
   if (!["completed", "needs_permission"].includes(result.status)) {
@@ -36,10 +58,12 @@ export async function ccSendMain(rawArgs: string[]): Promise<void> {
 
 export async function ccInputMain(rawArgs: string[]): Promise<void> {
   const options = parseInputArgs(rawArgs);
-  const result = await streamBridgeRequest({
+  const result = await runFileBridgeRequest({
     type: "input",
+    request_id: makeRequestId(),
     key: options.key,
     timeout_sec: options.timeoutSec,
+    created_at: new Date().toISOString(),
   });
   writeStatusFooter(result);
   if (!["completed", "needs_permission"].includes(result.status)) {
@@ -48,119 +72,120 @@ export async function ccInputMain(rawArgs: string[]): Promise<void> {
 }
 
 export async function ccStatusMain(_rawArgs: string[]): Promise<void> {
-  const status = await requestBridgeStatus();
+  const env = loadBridgeEnv();
+  const status = readBridgeStatus(env);
   stdout.write(`${JSON.stringify(status, null, 2)}\n`);
 }
 
-async function streamBridgeRequest(request: BridgeRequest): Promise<BridgeCommandResult> {
+async function runFileBridgeRequest(request: FileBridgeRequest): Promise<BridgeCommandResult> {
   const env = loadBridgeEnv();
-  validateSessionBinding(env);
-  return new Promise((resolve, reject) => {
-    const client = connect(env);
-    let buffer = "";
-    let resolved = false;
-
-    client.on("connect", () => {
-      client.write(encodeFrame(request));
-    });
-    client.on("data", (chunk: Buffer | string) => {
-      buffer += chunk.toString();
-      while (true) {
-        const newline = buffer.indexOf("\n");
-        if (newline === -1) break;
-        const raw = buffer.slice(0, newline);
-        buffer = buffer.slice(newline + 1);
-        if (!raw) continue;
-        const frame = parseFrame(raw) as BridgeResponse;
-        if (frame.type === "output") {
-          stdout.write(frame.data);
-        } else if (frame.type === "result") {
-          resolved = true;
-          resolve(frame.result);
-          client.end();
-        } else if (frame.type === "error") {
-          resolved = true;
-          reject(new Error(frame.error));
-          client.end();
-        }
-      }
-    });
-    client.on("error", reject);
-    client.on("close", () => {
-      if (!resolved) {
-        reject(new Error("codex_lead_cc bridge connection closed before a result was returned."));
-      }
-    });
-  });
+  ensureBridgeDirs(env);
+  writeRequest(env, request);
+  return streamUntilResult(env, request);
 }
 
-async function requestBridgeStatus(): Promise<BridgeStatusPayload> {
-  const env = loadBridgeEnv();
-  validateSessionBinding(env);
-  return new Promise((resolve, reject) => {
-    const client = connect(env);
-    let buffer = "";
-    let resolved = false;
+async function streamUntilResult(
+  env: BridgeEnv,
+  request: FileBridgeRequest,
+): Promise<BridgeCommandResult> {
+  const streamFile = path.join(env.streamsDir, `${request.request_id}.log`);
+  const resultFile = path.join(env.resultsDir, `${request.request_id}.json`);
+  const deadline = Date.now() + request.timeout_sec * 1_000 + 15_000;
+  let offset = 0;
 
-    client.on("connect", () => {
-      client.write(encodeFrame({ type: "status" }));
-    });
-    client.on("data", (chunk: Buffer | string) => {
-      buffer += chunk.toString();
-      while (true) {
-        const newline = buffer.indexOf("\n");
-        if (newline === -1) break;
-        const raw = buffer.slice(0, newline);
-        buffer = buffer.slice(newline + 1);
-        if (!raw) continue;
-        const frame = parseFrame(raw) as BridgeResponse;
-        if (frame.type === "status") {
-          resolved = true;
-          resolve(frame.status);
-          client.end();
-        } else if (frame.type === "error") {
-          resolved = true;
-          reject(new Error(frame.error));
-          client.end();
-        }
-      }
-    });
-    client.on("error", reject);
-    client.on("close", () => {
-      if (!resolved) {
-        reject(new Error("codex_lead_cc bridge connection closed before status was returned."));
-      }
-    });
-  });
+  while (Date.now() < deadline) {
+    offset = flushStream(streamFile, offset);
+    if (existsSync(resultFile)) {
+      offset = flushStream(streamFile, offset);
+      return parseResult(resultFile);
+    }
+    await sleep(100);
+  }
+
+  return {
+    status: "timeout",
+    error: `Timed out waiting for bridge result for request ${request.request_id}.`,
+  };
 }
 
-function connect(env: BridgeEnv): Socket {
-  return net.createConnection(env.socketPath);
+function flushStream(streamFile: string, offset: number): number {
+  if (!existsSync(streamFile)) return offset;
+  const size = statSync(streamFile).size;
+  if (size <= offset) return offset;
+  const raw = readFileSync(streamFile);
+  stdout.write(raw.subarray(offset));
+  return size;
+}
+
+function parseResult(resultFile: string): BridgeCommandResult {
+  const parsed = JSON.parse(readFileSync(resultFile, "utf8")) as BridgeCommandResult;
+  if (!parsed || typeof parsed.status !== "string") {
+    throw new Error(`Bridge result is invalid: ${resultFile}`);
+  }
+  return parsed;
+}
+
+function writeRequest(env: BridgeEnv, request: FileBridgeRequest): void {
+  const finalPath = path.join(env.inboxDir, `${request.request_id}.json`);
+  const tempPath = `${finalPath}.tmp.${process.pid}`;
+  writeFileSync(tempPath, `${JSON.stringify(request, null, 2)}\n`, "utf8");
+  renameSync(tempPath, finalPath);
+}
+
+function readBridgeStatus(env: BridgeEnv): BridgeStatusPayload {
+  if (!existsSync(env.stateFile)) {
+    throw new Error(NO_ACTIVE_BRIDGE);
+  }
+  const status = JSON.parse(readFileSync(env.stateFile, "utf8")) as BridgeStatusPayload;
+  if (status.session_id !== env.sessionId) {
+    throw new Error(NO_ACTIVE_BRIDGE);
+  }
+  return status;
 }
 
 function loadBridgeEnv(): BridgeEnv {
-  const socketPath = process.env.CODEX_LEAD_CC_BRIDGE_SOCKET;
   const sessionFile = process.env.CODEX_LEAD_CC_SESSION_FILE;
   const sessionId = process.env.CODEX_LEAD_CC_SESSION_ID;
-  if (!socketPath || !sessionFile || !sessionId) {
+  if (!sessionFile || !sessionId || !path.isAbsolute(sessionFile)) {
     throw new Error(NO_ACTIVE_BRIDGE);
   }
-  if (!path.isAbsolute(socketPath) || !path.isAbsolute(sessionFile)) {
-    throw new Error(NO_ACTIVE_BRIDGE);
-  }
-  return { socketPath, sessionFile, sessionId };
-}
 
-function validateSessionBinding(env: BridgeEnv): void {
-  let session: Partial<SessionFile>;
+  let session: SessionFile;
   try {
-    session = JSON.parse(readFileSync(env.sessionFile, "utf8")) as Partial<SessionFile>;
+    session = JSON.parse(readFileSync(sessionFile, "utf8")) as SessionFile;
   } catch {
     throw new Error(NO_ACTIVE_BRIDGE);
   }
-  if (session.session_id !== env.sessionId || session.bridge_socket !== env.socketPath) {
+
+  if (session.version !== 2 || session.session_id !== sessionId) {
     throw new Error(NO_ACTIVE_BRIDGE);
   }
+
+  const bridgeDir = process.env.CODEX_LEAD_CC_BRIDGE_DIR || session.bridge_dir;
+  const stateFile = process.env.CODEX_LEAD_CC_BRIDGE_STATE || session.bridge_state_file;
+  if (!bridgeDir || !stateFile || !path.isAbsolute(bridgeDir) || !path.isAbsolute(stateFile)) {
+    throw new Error(NO_ACTIVE_BRIDGE);
+  }
+  if (bridgeDir !== session.bridge_dir || stateFile !== session.bridge_state_file) {
+    throw new Error(NO_ACTIVE_BRIDGE);
+  }
+
+  return {
+    sessionFile,
+    sessionId,
+    bridgeDir,
+    stateFile,
+    inboxDir: path.join(bridgeDir, "inbox"),
+    streamsDir: path.join(bridgeDir, "streams"),
+    resultsDir: path.join(bridgeDir, "results"),
+  };
+}
+
+function ensureBridgeDirs(env: BridgeEnv): void {
+  if (!existsSync(env.bridgeDir) || !existsSync(env.inboxDir) || !existsSync(env.resultsDir)) {
+    throw new Error(NO_ACTIVE_BRIDGE);
+  }
+  mkdirSync(env.streamsDir, { recursive: true });
 }
 
 async function parseSendArgs(rawArgs: string[]): Promise<{ prompt: string; timeoutSec: number }> {
@@ -240,6 +265,14 @@ function isBridgeInputKey(value: string): value is BridgeInputKey {
 
 function writeStatusFooter(result: BridgeCommandResult): void {
   stdout.write(`\n<<<CODEX_LEAD_CC_STATUS>>>\n${JSON.stringify(result)}\n<<<CODEX_LEAD_CC_STATUS_END>>>\n`);
+}
+
+function makeRequestId(): string {
+  return `req_${Date.now()}_${randomUUID().slice(0, 8)}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function ccSendHelp(): string {

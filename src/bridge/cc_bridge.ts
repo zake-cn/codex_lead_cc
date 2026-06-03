@@ -1,32 +1,54 @@
 #!/usr/bin/env node
-import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import net, { type Socket } from "node:net";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  buildClaudeWorkerEnv,
+  buildClaudePtyEnv,
   buildFinalClaudeEnv,
   getClaudeRuntimeCommand,
   loadClaudeRuntimeEnvFile,
 } from "../claude/claude_runtime_env.js";
 import type {
   BridgeCommandResult,
+  BridgeInputKey,
   BridgeStatus,
   BridgeStatusPayload,
   SessionFile,
 } from "../types.js";
+import { BRIDGE_INPUT_KEYS } from "../types.js";
 import { CompletionDetector, DEFAULT_COMPLETION_OPTIONS, DONE_MARKER } from "./completion_detector.js";
 import { startClaudePty, type ClaudePty } from "./pty.js";
-import { encodeFrame, parseFrame, type BridgeRequest } from "./protocol.js";
 import { SimpleAnsiTerminalScreen } from "./terminal_screen.js";
+
+const INBOX_POLL_MS = 100;
 
 interface BridgeOptions {
   sessionFile: string;
 }
 
+interface FileBridgeRequest {
+  type: "send" | "input";
+  request_id: string;
+  prompt?: string;
+  key?: BridgeInputKey;
+  timeout_sec: number;
+  created_at: string;
+}
+
 interface ActiveInteraction {
-  client: Socket;
+  requestId: string;
+  streamFile: string;
+  resultFile: string;
   startedAt: number;
   deadlineAt: number;
   seenDoneMarker: boolean;
@@ -43,151 +65,188 @@ class CcBridge {
   private permissionPromptDetected = false;
   private suggestedKeys: string[] = [];
   private active: ActiveInteraction | undefined;
-  private server: net.Server | undefined;
+  private inboxTimer: ReturnType<typeof setInterval> | undefined;
+
+  private readonly inboxDir: string;
+  private readonly streamsDir: string;
+  private readonly resultsDir: string;
+  private readonly rawOutputLog: string;
 
   constructor(
     private readonly sessionFile: string,
     private readonly session: SessionFile,
     private readonly pty: ClaudePty,
   ) {
+    this.inboxDir = path.join(this.session.bridge_dir, "inbox");
+    this.streamsDir = path.join(this.session.bridge_dir, "streams");
+    this.resultsDir = path.join(this.session.bridge_dir, "results");
+    this.rawOutputLog = path.join(this.session.bridge_dir, "raw_output.log");
     this.pty.onData((chunk) => this.onPtyOutput(chunk));
     this.pty.onExit(() => this.onPtyExit());
   }
 
-  attach(server: net.Server): void {
-    this.server = server;
-    server.on("connection", (client) => this.handleClient(client));
+  start(): void {
+    mkdirSync(this.inboxDir, { recursive: true });
+    mkdirSync(this.streamsDir, { recursive: true });
+    mkdirSync(this.resultsDir, { recursive: true });
     process.on("SIGTERM", () => this.shutdown());
     process.on("SIGINT", () => this.shutdown());
     writeSessionPatch(this.sessionFile, {
       bridge_pid: process.pid,
       cc_pid: this.pty.pid,
     });
+    this.writeState();
+    this.inboxTimer = setInterval(() => this.processInbox(), INBOX_POLL_MS);
   }
 
-  private handleClient(client: Socket): void {
-    client.setEncoding("utf8");
-    let buffer = "";
-    let handled = false;
+  private processInbox(): void {
+    const requestFile = this.nextRequestFile();
+    if (!requestFile) return;
 
-    client.on("data", (chunk: string) => {
-      if (handled) return;
-      buffer += chunk;
-      const newline = buffer.indexOf("\n");
-      if (newline === -1) return;
-      const raw = buffer.slice(0, newline);
-      handled = true;
-      this.handleRequest(client, raw).catch((error) => {
-        writeFrame(client, { type: "error", error: messageFrom(error) });
-        client.end();
+    const runningFile = `${requestFile}.processing`;
+    let requestId = requestIdFromFile(requestFile);
+    try {
+      renameSync(requestFile, runningFile);
+      const request = this.parseRequest(runningFile);
+      requestId = request.request_id;
+      this.handleRequest(request);
+    } catch (error) {
+      this.writeImmediateResult(requestId, {
+        status: "interrupted",
+        error: messageFrom(error),
       });
-    });
+    } finally {
+      if (existsSync(runningFile)) {
+        try { unlinkSync(runningFile); } catch { /* non-fatal */ }
+      }
+    }
   }
 
-  private async handleRequest(client: Socket, raw: string): Promise<void> {
-    const request = parseFrame(raw) as BridgeRequest;
-    if (request.type === "status") {
-      writeFrame(client, { type: "status", status: this.statusPayload() });
-      client.end();
-      return;
-    }
+  private handleRequest(request: FileBridgeRequest): void {
     if (request.type === "send") {
-      this.startSend(client, request.prompt, request.timeout_sec);
+      this.handleSend(request);
       return;
     }
     if (request.type === "input") {
-      this.startInput(client, request.key, request.timeout_sec);
+      this.handleInput(request);
       return;
     }
-    throw new Error("Unknown bridge request.");
+    this.writeImmediateResult(request.request_id, {
+      status: "interrupted",
+      error: `Unknown request type: ${(request as { type?: unknown }).type}`,
+    });
   }
 
-  private startSend(client: Socket, prompt: string, timeoutSec: number): void {
+  private handleSend(request: FileBridgeRequest): void {
     if (this.state === "exited") {
-      finishClient(client, { status: "exited" });
+      this.writeImmediateResult(request.request_id, { status: "exited" });
       return;
     }
     if (this.active || this.state === "running") {
-      finishClient(client, { status: "busy" });
+      this.writeImmediateResult(request.request_id, { status: "busy" });
       return;
     }
     if (this.state === "needs_permission") {
-      finishClient(client, { status: "needs_permission", suggested_keys: this.suggestedKeys });
+      this.writeImmediateResult(request.request_id, {
+        status: "needs_permission",
+        suggested_keys: this.suggestedKeys,
+      });
+      return;
+    }
+    if (!request.prompt) {
+      this.writeImmediateResult(request.request_id, {
+        status: "interrupted",
+        error: "send request is missing prompt.",
+      });
       return;
     }
 
-    this.startInteraction(client, timeoutSec);
-    this.pty.write(ensureSubmitted(prompt));
+    this.startInteraction(request);
+    this.pty.write(ensureSubmitted(request.prompt));
   }
 
-  private startInput(client: Socket, key: string, timeoutSec: number): void {
+  private handleInput(request: FileBridgeRequest): void {
     if (this.state === "exited") {
-      finishClient(client, { status: "exited" });
+      this.writeImmediateResult(request.request_id, { status: "exited" });
       return;
     }
     if (this.active || this.state === "running") {
-      finishClient(client, { status: "busy" });
+      this.writeImmediateResult(request.request_id, { status: "busy" });
+      return;
+    }
+    if (!request.key || !isBridgeInputKey(request.key)) {
+      this.writeImmediateResult(request.request_id, {
+        status: "interrupted",
+        error: "input request has an invalid key.",
+      });
       return;
     }
 
-    if (key === "1" || key === "2" || key === "3") {
+    if (request.key === "1" || request.key === "2" || request.key === "3") {
       this.screen.clear();
       this.permissionPromptDetected = false;
       this.suggestedKeys = [];
     }
 
-    this.startInteraction(client, timeoutSec);
-    this.pty.write(inputKeyToBytes(key));
+    this.startInteraction(request);
+    this.pty.write(inputKeyToBytes(request.key));
   }
 
-  private startInteraction(client: Socket, timeoutSec: number): void {
+  private startInteraction(request: FileBridgeRequest): void {
     const now = Date.now();
+    const streamFile = path.join(this.streamsDir, `${request.request_id}.log`);
+    const resultFile = path.join(this.resultsDir, `${request.request_id}.json`);
+    writeFileSync(streamFile, "", "utf8");
+
     this.state = "running";
     this.lastOutputAt = now;
     const active: ActiveInteraction = {
-      client,
+      requestId: request.request_id,
+      streamFile,
+      resultFile,
       startedAt: now,
-      deadlineAt: now + timeoutSec * 1_000,
+      deadlineAt: now + request.timeout_sec * 1_000,
       seenDoneMarker: false,
       timer: setInterval(() => this.checkCompletion(), DEFAULT_COMPLETION_OPTIONS.checkIntervalMs),
     };
     active.timer.unref();
     this.active = active;
-
-    client.on("close", () => {
-      if (this.active?.client !== client) return;
-      clearInterval(this.active.timer);
-      this.active = undefined;
-      if (this.state === "running") this.state = "interrupted";
-    });
+    this.writeState();
   }
 
   private onPtyOutput(chunk: string): void {
     this.lastOutputAt = Date.now();
     this.lastOutput = tail(`${this.lastOutput}${chunk}`, 4_000);
+    appendFileSync(this.rawOutputLog, chunk, "utf8");
     this.screen.feed(chunk);
 
     if (this.active) {
       if (chunk.includes(DONE_MARKER)) {
         this.active.seenDoneMarker = true;
       }
-      writeFrame(this.active.client, { type: "output", data: chunk });
+      appendFileSync(this.active.streamFile, chunk, "utf8");
     }
 
     this.refreshScreenDetection();
     if (this.permissionPromptDetected) {
       if (this.active) {
-        this.finishActive({ status: "needs_permission", suggested_keys: this.suggestedKeys });
+        this.finishActive({
+          status: "needs_permission",
+          suggested_keys: this.suggestedKeys,
+        });
       } else if (this.state !== "exited") {
         this.state = "needs_permission";
       }
     }
+    this.writeState();
   }
 
   private onPtyExit(): void {
     this.state = "exited";
     if (this.active) {
       this.finishActive({ status: "exited" });
+    } else {
+      this.writeState();
     }
   }
 
@@ -202,6 +261,7 @@ class CcBridge {
       snapshot: this.screen.snapshot(),
     });
     this.refreshScreenDetection();
+    this.writeState();
     if (result) {
       this.finishActive(result);
     }
@@ -219,7 +279,18 @@ class CcBridge {
     else if (result.status === "interrupted") this.state = "interrupted";
     else if (result.status === "exited") this.state = "exited";
 
-    finishClient(active.client, result);
+    writeJsonAtomic(active.resultFile, result);
+    this.writeState();
+  }
+
+  private writeImmediateResult(requestId: string, result: BridgeCommandResult): void {
+    const streamFile = path.join(this.streamsDir, `${requestId}.log`);
+    const resultFile = path.join(this.resultsDir, `${requestId}.json`);
+    if (!existsSync(streamFile)) {
+      writeFileSync(streamFile, "", "utf8");
+    }
+    writeJsonAtomic(resultFile, result);
+    this.writeState();
   }
 
   private refreshScreenDetection(): void {
@@ -236,6 +307,8 @@ class CcBridge {
       status: this.state,
       bridge_pid: process.pid,
       cc_pid: this.pty.pid,
+      session_id: this.session.session_id,
+      project_label: path.basename(this.session.project_path) || this.session.project_path,
       last_output: trimStatusOutput(snapshot.text || this.lastOutput),
       bottom_lines: snapshot.bottom_lines,
       spinner_detected: this.spinnerDetected,
@@ -244,15 +317,45 @@ class CcBridge {
     };
   }
 
+  private writeState(): void {
+    writeJsonAtomic(this.session.bridge_state_file, this.statusPayload());
+  }
+
+  private nextRequestFile(): string | undefined {
+    const first = readdirSync(this.inboxDir)
+      .filter((name) => name.endsWith(".json"))
+      .sort()[0];
+    return first ? path.join(this.inboxDir, first) : undefined;
+  }
+
+  private parseRequest(requestFile: string): FileBridgeRequest {
+    const parsed = JSON.parse(readFileSync(requestFile, "utf8")) as Partial<FileBridgeRequest>;
+    if (!parsed.request_id || typeof parsed.request_id !== "string") {
+      throw new Error(`Request file is missing request_id: ${requestFile}`);
+    }
+    if (parsed.type !== "send" && parsed.type !== "input") {
+      throw new Error(`Request file has invalid type: ${requestFile}`);
+    }
+    if (!Number.isInteger(parsed.timeout_sec) || Number(parsed.timeout_sec) <= 0) {
+      throw new Error(`Request file has invalid timeout_sec: ${requestFile}`);
+    }
+    return {
+      type: parsed.type,
+      request_id: parsed.request_id,
+      prompt: parsed.prompt,
+      key: parsed.key,
+      timeout_sec: Number(parsed.timeout_sec),
+      created_at: typeof parsed.created_at === "string" ? parsed.created_at : new Date(0).toISOString(),
+    };
+  }
+
   private shutdown(): void {
     if (this.active) {
       this.finishActive({ status: "interrupted" });
     }
-    this.server?.close();
+    if (this.inboxTimer) clearInterval(this.inboxTimer);
     this.pty.kill("SIGTERM");
-    if (existsSync(this.session.bridge_socket)) {
-      try { unlinkSync(this.session.bridge_socket); } catch { /* non-fatal */ }
-    }
+    this.writeState();
     process.exit(0);
   }
 }
@@ -260,63 +363,27 @@ class CcBridge {
 export async function bridgeMain(rawArgs: string[]): Promise<void> {
   const options = parseBridgeArgs(rawArgs);
   const session = loadBridgeSession(options.sessionFile);
-  const server = await openBridgeServer(session.bridge_socket);
+  mkdirSync(session.bridge_dir, { recursive: true });
+  mkdirSync(path.join(session.bridge_dir, "inbox"), { recursive: true });
+  mkdirSync(path.join(session.bridge_dir, "streams"), { recursive: true });
+  mkdirSync(path.join(session.bridge_dir, "results"), { recursive: true });
+
   const loadedClaudeEnv = loadClaudeRuntimeEnvFile(session.claude_env_file);
   const finalClaudeEnv = buildFinalClaudeEnv({
     baseEnv: process.env,
     loadedEnv: loadedClaudeEnv.env,
   });
   const runtime = getClaudeRuntimeCommand(finalClaudeEnv);
-  const workerEnv = buildClaudeWorkerEnv(finalClaudeEnv);
-  let pty: ClaudePty | undefined;
-  try {
-    pty = await startClaudePty({
-      command: runtime.command,
-      args: runtime.argsPrefix,
-      cwd: session.project_path,
-      env: workerEnv,
-    });
-    const bridge = new CcBridge(options.sessionFile, session, pty);
-    bridge.attach(server);
-  } catch (error) {
-    server.close();
-    if (existsSync(session.bridge_socket)) {
-      try { unlinkSync(session.bridge_socket); } catch { /* non-fatal */ }
-    }
-    pty?.kill("SIGTERM");
-    throw error;
-  }
-  watchParent();
-}
-
-function openBridgeServer(socketPath: string): Promise<net.Server> {
-  return new Promise((resolve, reject) => {
-    const server = net.createServer();
-    let settled = false;
-    const fail = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      server.close();
-      reject(error);
-    };
-    const timer = setTimeout(() => {
-      fail(new Error(`Timed out opening CC bridge socket: ${socketPath}`));
-    }, 5_000);
-
-    server.on("error", fail);
-    if (existsSync(socketPath)) {
-      unlinkSync(socketPath);
-    }
-    mkdirSync(path.dirname(socketPath), { recursive: true });
-    server.listen(socketPath, () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      try { chmodSync(socketPath, 0o600); } catch { /* non-fatal */ }
-      resolve(server);
-    });
+  const ptyEnv = buildClaudePtyEnv(finalClaudeEnv);
+  const pty = await startClaudePty({
+    command: runtime.command,
+    args: runtime.argsPrefix,
+    cwd: session.project_path,
+    env: ptyEnv,
   });
+  const bridge = new CcBridge(options.sessionFile, session, pty);
+  bridge.start();
+  watchParent();
 }
 
 function loadBridgeSession(sessionFile: string): SessionFile {
@@ -325,7 +392,10 @@ function loadBridgeSession(sessionFile: string): SessionFile {
     "session_id",
     "project_path",
     "supervisor_home",
-    "bridge_socket",
+    "session_dir",
+    "artifact_root",
+    "bridge_dir",
+    "bridge_state_file",
     "claude_env_file",
     "created_at",
   ];
@@ -334,7 +404,7 @@ function loadBridgeSession(sessionFile: string): SessionFile {
       throw new Error(`Session file is missing required bridge field: ${key}`);
     }
   }
-  if (parsed.version !== 1) {
+  if (parsed.version !== 2) {
     throw new Error(`Unsupported session file version: ${parsed.version}`);
   }
   return parsed as SessionFile;
@@ -374,22 +444,19 @@ function watchParent(): void {
 function writeSessionPatch(sessionFile: string, patch: Partial<SessionFile>): void {
   try {
     const session = JSON.parse(readFileSync(sessionFile, "utf8")) as Record<string, unknown>;
-    writeFileSync(sessionFile, `${JSON.stringify({ ...session, ...patch }, null, 2)}\n`, "utf8");
+    writeJsonAtomic(sessionFile, { ...session, ...patch });
   } catch {
     // The bridge can operate without updating diagnostic pid fields.
   }
 }
 
-function writeFrame(client: Socket, frame: Parameters<typeof encodeFrame>[0]): void {
-  client.write(encodeFrame(frame));
+function writeJsonAtomic(filePath: string, value: unknown): void {
+  const tempPath = `${filePath}.tmp.${process.pid}`;
+  writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  renameSync(tempPath, filePath);
 }
 
-function finishClient(client: Socket, result: BridgeCommandResult): void {
-  writeFrame(client, { type: "result", result });
-  client.end();
-}
-
-function inputKeyToBytes(key: string): string {
+function inputKeyToBytes(key: BridgeInputKey): string {
   if (key === "1") return "1\r";
   if (key === "2") return "2\r";
   if (key === "3") return "3\r";
@@ -397,6 +464,10 @@ function inputKeyToBytes(key: string): string {
   if (key === "escape") return "\x1b";
   if (key === "ctrl-c") return "\x03";
   throw new Error(`Unsupported --key: ${key}`);
+}
+
+function isBridgeInputKey(value: unknown): value is BridgeInputKey {
+  return typeof value === "string" && (BRIDGE_INPUT_KEYS as readonly string[]).includes(value);
 }
 
 function ensureSubmitted(prompt: string): string {
@@ -410,6 +481,10 @@ function trimStatusOutput(value: string): string {
 function tail(value: string, max: number): string {
   if (value.length <= max) return value;
   return value.slice(value.length - max);
+}
+
+function requestIdFromFile(requestFile: string): string {
+  return path.basename(requestFile).replace(/\.json$/, "");
 }
 
 function isProcessAlive(pid: number): boolean {

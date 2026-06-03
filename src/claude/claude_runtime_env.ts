@@ -218,9 +218,9 @@ export function buildFinalClaudeEnv(args: {
   return { ...args.baseEnv, ...args.loadedEnv };
 }
 
-// ── Claude worker env (strips internal runtime keys) ──
+// ── Claude PTY env (strips internal runtime keys) ──
 
-export function buildClaudeWorkerEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+export function buildClaudePtyEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env = { ...baseEnv };
   delete env[CLAUDE_COMMAND_ENV];
   delete env[CLAUDE_ARGS_PREFIX_ENV];

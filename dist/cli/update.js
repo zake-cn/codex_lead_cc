@@ -68,7 +68,7 @@ export function runUpdate(options, repoRoot) {
             return result.status ?? 1;
         }
     }
-    process.stdout.write("Update completed.\nRun: codex_lead_cc --doctor\n");
+    process.stdout.write("Update completed.\nMigrating supervisor files with: codex_lead_cc migrate-supervisor\n");
     return 0;
 }
 function commandsForUpdate(installSource, source) {

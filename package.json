@@ -1,7 +1,7 @@
 {
   "name": "codex_lead_cc",
   "version": "0.6.0",
-  "description": "Codex Lead — Supervisor launcher with a single long-lived Claude Code bridge.",
+  "description": "Codex-to-Claude-Code interactive bridge with one long-lived Claude Code PTY.",
   "license": "MIT",
   "type": "module",
   "repository": {

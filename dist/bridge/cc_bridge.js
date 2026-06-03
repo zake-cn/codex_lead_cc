@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import net from "node:net";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync, } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildClaudeWorkerEnv, buildFinalClaudeEnv, getClaudeRuntimeCommand, loadClaudeRuntimeEnvFile, } from "../claude/claude_runtime_env.js";
+import { buildClaudePtyEnv, buildFinalClaudeEnv, getClaudeRuntimeCommand, loadClaudeRuntimeEnvFile, } from "../claude/claude_runtime_env.js";
+import { BRIDGE_INPUT_KEYS } from "../types.js";
 import { CompletionDetector, DEFAULT_COMPLETION_OPTIONS, DONE_MARKER } from "./completion_detector.js";
 import { startClaudePty } from "./pty.js";
-import { encodeFrame, parseFrame } from "./protocol.js";
 import { SimpleAnsiTerminalScreen } from "./terminal_screen.js";
+const INBOX_POLL_MS = 100;
 class CcBridge {
     sessionFile;
     session;
@@ -21,139 +21,178 @@ class CcBridge {
     permissionPromptDetected = false;
     suggestedKeys = [];
     active;
-    server;
+    inboxTimer;
+    inboxDir;
+    streamsDir;
+    resultsDir;
+    rawOutputLog;
     constructor(sessionFile, session, pty) {
         this.sessionFile = sessionFile;
         this.session = session;
         this.pty = pty;
+        this.inboxDir = path.join(this.session.bridge_dir, "inbox");
+        this.streamsDir = path.join(this.session.bridge_dir, "streams");
+        this.resultsDir = path.join(this.session.bridge_dir, "results");
+        this.rawOutputLog = path.join(this.session.bridge_dir, "raw_output.log");
         this.pty.onData((chunk) => this.onPtyOutput(chunk));
         this.pty.onExit(() => this.onPtyExit());
     }
-    attach(server) {
-        this.server = server;
-        server.on("connection", (client) => this.handleClient(client));
+    start() {
+        mkdirSync(this.inboxDir, { recursive: true });
+        mkdirSync(this.streamsDir, { recursive: true });
+        mkdirSync(this.resultsDir, { recursive: true });
         process.on("SIGTERM", () => this.shutdown());
         process.on("SIGINT", () => this.shutdown());
         writeSessionPatch(this.sessionFile, {
             bridge_pid: process.pid,
             cc_pid: this.pty.pid,
         });
+        this.writeState();
+        this.inboxTimer = setInterval(() => this.processInbox(), INBOX_POLL_MS);
     }
-    handleClient(client) {
-        client.setEncoding("utf8");
-        let buffer = "";
-        let handled = false;
-        client.on("data", (chunk) => {
-            if (handled)
-                return;
-            buffer += chunk;
-            const newline = buffer.indexOf("\n");
-            if (newline === -1)
-                return;
-            const raw = buffer.slice(0, newline);
-            handled = true;
-            this.handleRequest(client, raw).catch((error) => {
-                writeFrame(client, { type: "error", error: messageFrom(error) });
-                client.end();
-            });
-        });
-    }
-    async handleRequest(client, raw) {
-        const request = parseFrame(raw);
-        if (request.type === "status") {
-            writeFrame(client, { type: "status", status: this.statusPayload() });
-            client.end();
+    processInbox() {
+        const requestFile = this.nextRequestFile();
+        if (!requestFile)
             return;
+        const runningFile = `${requestFile}.processing`;
+        let requestId = requestIdFromFile(requestFile);
+        try {
+            renameSync(requestFile, runningFile);
+            const request = this.parseRequest(runningFile);
+            requestId = request.request_id;
+            this.handleRequest(request);
         }
+        catch (error) {
+            this.writeImmediateResult(requestId, {
+                status: "interrupted",
+                error: messageFrom(error),
+            });
+        }
+        finally {
+            if (existsSync(runningFile)) {
+                try {
+                    unlinkSync(runningFile);
+                }
+                catch { /* non-fatal */ }
+            }
+        }
+    }
+    handleRequest(request) {
         if (request.type === "send") {
-            this.startSend(client, request.prompt, request.timeout_sec);
+            this.handleSend(request);
             return;
         }
         if (request.type === "input") {
-            this.startInput(client, request.key, request.timeout_sec);
+            this.handleInput(request);
             return;
         }
-        throw new Error("Unknown bridge request.");
+        this.writeImmediateResult(request.request_id, {
+            status: "interrupted",
+            error: `Unknown request type: ${request.type}`,
+        });
     }
-    startSend(client, prompt, timeoutSec) {
+    handleSend(request) {
         if (this.state === "exited") {
-            finishClient(client, { status: "exited" });
+            this.writeImmediateResult(request.request_id, { status: "exited" });
             return;
         }
         if (this.active || this.state === "running") {
-            finishClient(client, { status: "busy" });
+            this.writeImmediateResult(request.request_id, { status: "busy" });
             return;
         }
         if (this.state === "needs_permission") {
-            finishClient(client, { status: "needs_permission", suggested_keys: this.suggestedKeys });
+            this.writeImmediateResult(request.request_id, {
+                status: "needs_permission",
+                suggested_keys: this.suggestedKeys,
+            });
             return;
         }
-        this.startInteraction(client, timeoutSec);
-        this.pty.write(ensureSubmitted(prompt));
+        if (!request.prompt) {
+            this.writeImmediateResult(request.request_id, {
+                status: "interrupted",
+                error: "send request is missing prompt.",
+            });
+            return;
+        }
+        this.startInteraction(request);
+        this.pty.write(ensureSubmitted(request.prompt));
     }
-    startInput(client, key, timeoutSec) {
+    handleInput(request) {
         if (this.state === "exited") {
-            finishClient(client, { status: "exited" });
+            this.writeImmediateResult(request.request_id, { status: "exited" });
             return;
         }
         if (this.active || this.state === "running") {
-            finishClient(client, { status: "busy" });
+            this.writeImmediateResult(request.request_id, { status: "busy" });
             return;
         }
-        if (key === "1" || key === "2" || key === "3") {
+        if (!request.key || !isBridgeInputKey(request.key)) {
+            this.writeImmediateResult(request.request_id, {
+                status: "interrupted",
+                error: "input request has an invalid key.",
+            });
+            return;
+        }
+        if (request.key === "1" || request.key === "2" || request.key === "3") {
             this.screen.clear();
             this.permissionPromptDetected = false;
             this.suggestedKeys = [];
         }
-        this.startInteraction(client, timeoutSec);
-        this.pty.write(inputKeyToBytes(key));
+        this.startInteraction(request);
+        this.pty.write(inputKeyToBytes(request.key));
     }
-    startInteraction(client, timeoutSec) {
+    startInteraction(request) {
         const now = Date.now();
+        const streamFile = path.join(this.streamsDir, `${request.request_id}.log`);
+        const resultFile = path.join(this.resultsDir, `${request.request_id}.json`);
+        writeFileSync(streamFile, "", "utf8");
         this.state = "running";
         this.lastOutputAt = now;
         const active = {
-            client,
+            requestId: request.request_id,
+            streamFile,
+            resultFile,
             startedAt: now,
-            deadlineAt: now + timeoutSec * 1_000,
+            deadlineAt: now + request.timeout_sec * 1_000,
             seenDoneMarker: false,
             timer: setInterval(() => this.checkCompletion(), DEFAULT_COMPLETION_OPTIONS.checkIntervalMs),
         };
         active.timer.unref();
         this.active = active;
-        client.on("close", () => {
-            if (this.active?.client !== client)
-                return;
-            clearInterval(this.active.timer);
-            this.active = undefined;
-            if (this.state === "running")
-                this.state = "interrupted";
-        });
+        this.writeState();
     }
     onPtyOutput(chunk) {
         this.lastOutputAt = Date.now();
         this.lastOutput = tail(`${this.lastOutput}${chunk}`, 4_000);
+        appendFileSync(this.rawOutputLog, chunk, "utf8");
         this.screen.feed(chunk);
         if (this.active) {
             if (chunk.includes(DONE_MARKER)) {
                 this.active.seenDoneMarker = true;
             }
-            writeFrame(this.active.client, { type: "output", data: chunk });
+            appendFileSync(this.active.streamFile, chunk, "utf8");
         }
         this.refreshScreenDetection();
         if (this.permissionPromptDetected) {
             if (this.active) {
-                this.finishActive({ status: "needs_permission", suggested_keys: this.suggestedKeys });
+                this.finishActive({
+                    status: "needs_permission",
+                    suggested_keys: this.suggestedKeys,
+                });
             }
             else if (this.state !== "exited") {
                 this.state = "needs_permission";
             }
         }
+        this.writeState();
     }
     onPtyExit() {
         this.state = "exited";
         if (this.active) {
             this.finishActive({ status: "exited" });
+        }
+        else {
+            this.writeState();
         }
     }
     checkCompletion() {
@@ -168,6 +207,7 @@ class CcBridge {
             snapshot: this.screen.snapshot(),
         });
         this.refreshScreenDetection();
+        this.writeState();
         if (result) {
             this.finishActive(result);
         }
@@ -188,7 +228,17 @@ class CcBridge {
             this.state = "interrupted";
         else if (result.status === "exited")
             this.state = "exited";
-        finishClient(active.client, result);
+        writeJsonAtomic(active.resultFile, result);
+        this.writeState();
+    }
+    writeImmediateResult(requestId, result) {
+        const streamFile = path.join(this.streamsDir, `${requestId}.log`);
+        const resultFile = path.join(this.resultsDir, `${requestId}.json`);
+        if (!existsSync(streamFile)) {
+            writeFileSync(streamFile, "", "utf8");
+        }
+        writeJsonAtomic(resultFile, result);
+        this.writeState();
     }
     refreshScreenDetection() {
         const detection = this.detector.inspect(this.screen.snapshot());
@@ -203,6 +253,8 @@ class CcBridge {
             status: this.state,
             bridge_pid: process.pid,
             cc_pid: this.pty.pid,
+            session_id: this.session.session_id,
+            project_label: path.basename(this.session.project_path) || this.session.project_path,
             last_output: trimStatusOutput(snapshot.text || this.lastOutput),
             bottom_lines: snapshot.bottom_lines,
             spinner_detected: this.spinnerDetected,
@@ -210,88 +262,69 @@ class CcBridge {
             suggested_keys: this.suggestedKeys,
         };
     }
+    writeState() {
+        writeJsonAtomic(this.session.bridge_state_file, this.statusPayload());
+    }
+    nextRequestFile() {
+        const first = readdirSync(this.inboxDir)
+            .filter((name) => name.endsWith(".json"))
+            .sort()[0];
+        return first ? path.join(this.inboxDir, first) : undefined;
+    }
+    parseRequest(requestFile) {
+        const parsed = JSON.parse(readFileSync(requestFile, "utf8"));
+        if (!parsed.request_id || typeof parsed.request_id !== "string") {
+            throw new Error(`Request file is missing request_id: ${requestFile}`);
+        }
+        if (parsed.type !== "send" && parsed.type !== "input") {
+            throw new Error(`Request file has invalid type: ${requestFile}`);
+        }
+        if (!Number.isInteger(parsed.timeout_sec) || Number(parsed.timeout_sec) <= 0) {
+            throw new Error(`Request file has invalid timeout_sec: ${requestFile}`);
+        }
+        return {
+            type: parsed.type,
+            request_id: parsed.request_id,
+            prompt: parsed.prompt,
+            key: parsed.key,
+            timeout_sec: Number(parsed.timeout_sec),
+            created_at: typeof parsed.created_at === "string" ? parsed.created_at : new Date(0).toISOString(),
+        };
+    }
     shutdown() {
         if (this.active) {
             this.finishActive({ status: "interrupted" });
         }
-        this.server?.close();
+        if (this.inboxTimer)
+            clearInterval(this.inboxTimer);
         this.pty.kill("SIGTERM");
-        if (existsSync(this.session.bridge_socket)) {
-            try {
-                unlinkSync(this.session.bridge_socket);
-            }
-            catch { /* non-fatal */ }
-        }
+        this.writeState();
         process.exit(0);
     }
 }
 export async function bridgeMain(rawArgs) {
     const options = parseBridgeArgs(rawArgs);
     const session = loadBridgeSession(options.sessionFile);
-    const server = await openBridgeServer(session.bridge_socket);
+    mkdirSync(session.bridge_dir, { recursive: true });
+    mkdirSync(path.join(session.bridge_dir, "inbox"), { recursive: true });
+    mkdirSync(path.join(session.bridge_dir, "streams"), { recursive: true });
+    mkdirSync(path.join(session.bridge_dir, "results"), { recursive: true });
     const loadedClaudeEnv = loadClaudeRuntimeEnvFile(session.claude_env_file);
     const finalClaudeEnv = buildFinalClaudeEnv({
         baseEnv: process.env,
         loadedEnv: loadedClaudeEnv.env,
     });
     const runtime = getClaudeRuntimeCommand(finalClaudeEnv);
-    const workerEnv = buildClaudeWorkerEnv(finalClaudeEnv);
-    let pty;
-    try {
-        pty = await startClaudePty({
-            command: runtime.command,
-            args: runtime.argsPrefix,
-            cwd: session.project_path,
-            env: workerEnv,
-        });
-        const bridge = new CcBridge(options.sessionFile, session, pty);
-        bridge.attach(server);
-    }
-    catch (error) {
-        server.close();
-        if (existsSync(session.bridge_socket)) {
-            try {
-                unlinkSync(session.bridge_socket);
-            }
-            catch { /* non-fatal */ }
-        }
-        pty?.kill("SIGTERM");
-        throw error;
-    }
-    watchParent();
-}
-function openBridgeServer(socketPath) {
-    return new Promise((resolve, reject) => {
-        const server = net.createServer();
-        let settled = false;
-        const fail = (error) => {
-            if (settled)
-                return;
-            settled = true;
-            clearTimeout(timer);
-            server.close();
-            reject(error);
-        };
-        const timer = setTimeout(() => {
-            fail(new Error(`Timed out opening CC bridge socket: ${socketPath}`));
-        }, 5_000);
-        server.on("error", fail);
-        if (existsSync(socketPath)) {
-            unlinkSync(socketPath);
-        }
-        mkdirSync(path.dirname(socketPath), { recursive: true });
-        server.listen(socketPath, () => {
-            if (settled)
-                return;
-            settled = true;
-            clearTimeout(timer);
-            try {
-                chmodSync(socketPath, 0o600);
-            }
-            catch { /* non-fatal */ }
-            resolve(server);
-        });
+    const ptyEnv = buildClaudePtyEnv(finalClaudeEnv);
+    const pty = await startClaudePty({
+        command: runtime.command,
+        args: runtime.argsPrefix,
+        cwd: session.project_path,
+        env: ptyEnv,
     });
+    const bridge = new CcBridge(options.sessionFile, session, pty);
+    bridge.start();
+    watchParent();
 }
 function loadBridgeSession(sessionFile) {
     const parsed = JSON.parse(readFileSync(sessionFile, "utf8"));
@@ -299,7 +332,10 @@ function loadBridgeSession(sessionFile) {
         "session_id",
         "project_path",
         "supervisor_home",
-        "bridge_socket",
+        "session_dir",
+        "artifact_root",
+        "bridge_dir",
+        "bridge_state_file",
         "claude_env_file",
         "created_at",
     ];
@@ -308,7 +344,7 @@ function loadBridgeSession(sessionFile) {
             throw new Error(`Session file is missing required bridge field: ${key}`);
         }
     }
-    if (parsed.version !== 1) {
+    if (parsed.version !== 2) {
         throw new Error(`Unsupported session file version: ${parsed.version}`);
     }
     return parsed;
@@ -349,18 +385,16 @@ function watchParent() {
 function writeSessionPatch(sessionFile, patch) {
     try {
         const session = JSON.parse(readFileSync(sessionFile, "utf8"));
-        writeFileSync(sessionFile, `${JSON.stringify({ ...session, ...patch }, null, 2)}\n`, "utf8");
+        writeJsonAtomic(sessionFile, { ...session, ...patch });
     }
     catch {
         // The bridge can operate without updating diagnostic pid fields.
     }
 }
-function writeFrame(client, frame) {
-    client.write(encodeFrame(frame));
-}
-function finishClient(client, result) {
-    writeFrame(client, { type: "result", result });
-    client.end();
+function writeJsonAtomic(filePath, value) {
+    const tempPath = `${filePath}.tmp.${process.pid}`;
+    writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+    renameSync(tempPath, filePath);
 }
 function inputKeyToBytes(key) {
     if (key === "1")
@@ -377,6 +411,9 @@ function inputKeyToBytes(key) {
         return "\x03";
     throw new Error(`Unsupported --key: ${key}`);
 }
+function isBridgeInputKey(value) {
+    return typeof value === "string" && BRIDGE_INPUT_KEYS.includes(value);
+}
 function ensureSubmitted(prompt) {
     return prompt.endsWith("\n") || prompt.endsWith("\r") ? `${prompt}\r` : `${prompt}\r`;
 }
@@ -387,6 +424,9 @@ function tail(value, max) {
     if (value.length <= max)
         return value;
     return value.slice(value.length - max);
+}
+function requestIdFromFile(requestFile) {
+    return path.basename(requestFile).replace(/\.json$/, "");
 }
 function isProcessAlive(pid) {
     try {
