@@ -64,6 +64,9 @@ export interface BridgeStatusPayload {
 
 export interface BridgeCommandResult {
   status: BridgeResultStatus;
+  output?: string;
+  output_file?: string;
+  raw_output_file?: string;
   suggested_keys?: string[];
   error?: string;
 }

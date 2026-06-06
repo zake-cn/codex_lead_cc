@@ -51,9 +51,11 @@ interface ActiveInteraction {
   request: FileBridgeRequest;
   requestId: string;
   streamFile: string;
+  cleanStreamFile: string;
   resultFile: string;
   debugDir: string;
   rawStreamFile: string;
+  finalOutputFile: string;
   sentPromptText: string;
   startedAt: number;
   deadlineAt: number;
@@ -217,9 +219,11 @@ class CcBridge {
     const resultFile = path.join(this.resultsDir, `${request.request_id}.json`);
     const debugDir = path.join(this.session.artifact_root, "debug", request.request_id);
     const rawStreamFile = path.join(debugDir, "raw_stream.log");
+    const finalOutputFile = path.join(debugDir, "final_output.txt");
     mkdirSync(debugDir, { recursive: true });
     writeFileSync(streamFile, "", "utf8");
     writeFileSync(rawStreamFile, "", "utf8");
+    writeFileSync(finalOutputFile, "", "utf8");
     writeJsonAtomic(path.join(debugDir, "request.json"), request);
 
     this.state = "running";
@@ -229,9 +233,11 @@ class CcBridge {
       request,
       requestId: request.request_id,
       streamFile,
+      cleanStreamFile: streamFile,
       resultFile,
       debugDir,
       rawStreamFile,
+      finalOutputFile,
       sentPromptText: request.type === "send" ? request.prompt ?? "" : request.key ?? "",
       startedAt: now,
       deadlineAt: now + request.timeout_sec * 1_000,
@@ -278,7 +284,7 @@ class CcBridge {
       }
       appendFileSync(this.active.rawStreamFile, chunk, "utf8");
       const cleanOutput = cleanChunkForClient(this.active, chunk);
-      if (cleanOutput) appendFileSync(this.active.streamFile, cleanOutput, "utf8");
+      if (cleanOutput) appendFileSync(this.active.cleanStreamFile, cleanOutput, "utf8");
     }
 
     this.refreshScreenDetection();
@@ -364,8 +370,15 @@ class CcBridge {
     else if (result.status === "not_submitted") this.state = "not_submitted";
     else if (result.status === "exited") this.state = "exited";
 
-    writeJsonAtomic(active.resultFile, result);
-    this.writeDebugFinish(active, result);
+    const finalOutput = this.buildFinalOutput(active, result);
+    writeFileSync(active.finalOutputFile, finalOutput, "utf8");
+    const finalResult: BridgeCommandResult = {
+      ...result,
+      output_file: active.finalOutputFile,
+      raw_output_file: active.rawStreamFile,
+    };
+    writeJsonAtomic(active.resultFile, finalResult);
+    this.writeDebugFinish(active, finalResult);
     this.writeState();
   }
 
@@ -376,12 +389,55 @@ class CcBridge {
   ): void {
     const streamFile = path.join(this.streamsDir, `${requestId}.log`);
     const resultFile = path.join(this.resultsDir, `${requestId}.json`);
+    const debugDir = path.join(this.session.artifact_root, "debug", requestId);
+    const rawOutputFile = path.join(debugDir, "raw_stream.log");
+    const finalOutputFile = path.join(debugDir, "final_output.txt");
+    mkdirSync(debugDir, { recursive: true });
     if (!existsSync(streamFile)) {
       writeFileSync(streamFile, "", "utf8");
     }
-    writeJsonAtomic(resultFile, result);
-    this.writeImmediateDebug(requestId, result, request);
+    if (!existsSync(rawOutputFile)) writeFileSync(rawOutputFile, "", "utf8");
+    const finalOutput = this.buildImmediateOutput(result);
+    writeFileSync(finalOutputFile, finalOutput, "utf8");
+    const finalResult: BridgeCommandResult = {
+      ...result,
+      output_file: finalOutputFile,
+      raw_output_file: rawOutputFile,
+    };
+    writeJsonAtomic(resultFile, finalResult);
+    this.writeImmediateDebug(requestId, finalResult, request);
     this.writeState();
+  }
+
+  private buildFinalOutput(active: ActiveInteraction, result: BridgeCommandResult): string {
+    const snapshot = this.screen.snapshot();
+    const cleanStream = existsSync(active.cleanStreamFile)
+      ? readFileSync(active.cleanStreamFile, "utf8")
+      : "";
+    const streamOutput = cleanFinalText(cleanStream, active.sentPromptText);
+
+    if (result.status === "needs_permission") {
+      return buildPermissionOutput(streamOutput, snapshot, active.sentPromptText);
+    }
+
+    const screenOutput = cleanFinalText(snapshot.text, active.sentPromptText);
+    let output = streamOutput || screenOutput;
+    if (["timeout", "interrupted", "not_submitted", "exited"].includes(result.status)) {
+      output = tailMeaningfulLines(output, 30);
+      const summary = result.error || terminalStatusSummary(result.status);
+      if (summary && !output.includes(summary)) {
+        output = [output, summary].filter(Boolean).join("\n");
+      }
+    }
+    return output ? `${output.replace(/\s+$/g, "")}\n` : "";
+  }
+
+  private buildImmediateOutput(result: BridgeCommandResult): string {
+    if (result.status === "needs_permission") {
+      return buildPermissionOutput("", this.screen.snapshot());
+    }
+    const summary = result.error || terminalStatusSummary(result.status);
+    return summary ? `${summary.replace(/\s+$/g, "")}\n` : "";
   }
 
   private updateActiveOutputDetection(
@@ -468,10 +524,8 @@ class CcBridge {
     request?: Partial<FileBridgeRequest>,
   ): void {
     const debugDir = path.join(this.session.artifact_root, "debug", requestId);
-    mkdirSync(debugDir, { recursive: true });
     const snapshot = this.screen.snapshot();
     writeJsonAtomic(path.join(debugDir, "request.json"), request ?? { request_id: requestId });
-    writeFileSync(path.join(debugDir, "raw_stream.log"), "", "utf8");
     writeFileSync(path.join(debugDir, "screen_snapshot_at_finish.txt"), snapshot.text, "utf8");
     writeJsonAtomic(path.join(debugDir, "result.json"), result);
     writeJsonAtomic(path.join(debugDir, "decision.json"), {
@@ -741,6 +795,13 @@ function isInputEcho(sentText: string, plainOutput: string): boolean {
   const needle = promptNeedle(sentText);
   if (!needle) return false;
   const haystack = plainOutput.replace(/\s+/g, " ");
+  if (needle.length < 8) {
+    const withoutPrompt = haystack
+      .replace(/^(?:bash|sh|zsh)-?\d*(?:\.\d+)*[$#>]\s*/i, "")
+      .replace(/^>\s*/, "")
+      .trim();
+    return withoutPrompt === needle;
+  }
   if (haystack.includes(needle)) return true;
   if (needle.length > 24 && haystack.includes(needle.slice(-24))) return true;
   return false;
@@ -783,8 +844,8 @@ function cleanChunkForClient(active: ActiveInteraction, chunk: string): string {
     if (isInputEcho(active.sentPromptText, line)) continue;
     if (isTuiNoiseLine(line)) continue;
     const key = normalizeClientLine(line);
-    if (!key || active.cleanEmittedLineKeys.has(key)) continue;
-    active.cleanEmittedLineKeys.add(key);
+    if (!key || (key.length >= 4 && active.cleanEmittedLineKeys.has(key))) continue;
+    if (key.length >= 4) active.cleanEmittedLineKeys.add(key);
     out.push(line);
   }
   return out.length > 0 ? `${out.join("\n")}\n` : "";
@@ -797,6 +858,107 @@ function cleanStatusText(value: string): string {
     .map(cleanClientLine)
     .filter((line) => line && !isTuiNoiseLine(line));
   return lines.slice(-20).join("\n");
+}
+
+function cleanFinalText(value: string, sentText: string): string {
+  const promptLines = new Set(
+    normalizeForDetection(sentText)
+      .split("\n")
+      .map(normalizeClientLine)
+      .filter(Boolean),
+  );
+  const candidateLines: string[] = [];
+  for (const rawLine of stripAnsi(value).replace(/\r/g, "\n").split("\n")) {
+    let line = cleanClientLine(rawLine);
+    if (!line || line.includes(DONE_MARKER) || isTuiNoiseLine(line)) continue;
+    const normalized = normalizeClientLine(line);
+    if (promptLines.has(normalized) || isInputEcho(sentText, normalized)) continue;
+
+    const normalizedPrompt = normalizeForDetection(sentText).replace(/\s+/g, " ");
+    if (normalizedPrompt && normalized.includes(normalizedPrompt)) {
+      line = line.replace(normalizedPrompt, "").trim();
+    }
+    if (line) candidateLines.push(line);
+  }
+
+  const seen = new Set<string>();
+  const lines: string[] = [];
+  for (const line of stripLeadingPromptEchoFragments(candidateLines, sentText)) {
+    const key = normalizeClientLine(line);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    lines.push(line);
+  }
+  return lines.join("\n").trim();
+}
+
+function stripLeadingPromptEchoFragments(lines: string[], sentText: string): string[] {
+  const prompt = normalizeForDetection(sentText).replace(/\s+/g, "");
+  if (!prompt || lines.length === 0) return lines;
+
+  let joined = "";
+  for (let index = 0; index < Math.min(lines.length, 100); index++) {
+    const fragment = normalizeClientLine(lines[index]).replace(/^>\s*/, "").replace(/\s+/g, "");
+    if (!fragment || !prompt.startsWith(`${joined}${fragment}`)) return lines;
+    joined += fragment;
+    if (joined === prompt) return lines.slice(index + 1);
+  }
+  return lines;
+}
+
+function buildPermissionOutput(
+  cleanStream: string,
+  snapshot: TerminalScreenSnapshot,
+  sentText = "",
+): string {
+  const visible = cleanFinalText(
+    `${cleanStream}\n${snapshot.bottom_lines.slice(-12).join("\n")}\n${snapshot.text}`,
+    sentText,
+  );
+  const lines = visible.split("\n").map((line) => line.trim()).filter(Boolean);
+  const optionOne = lines.findIndex((line) => /^1[.)]\s+/.test(line));
+  const optionTwo = lines.findIndex((line) => /^2[.)]\s+/.test(line));
+  const optionThree = lines.findIndex((line) => /^3[.)]\s+/.test(line));
+  const menuComplete = optionOne >= 0 && optionTwo > optionOne && optionThree > optionTwo;
+  const options = menuComplete
+    ? [lines[optionOne], lines[optionTwo], lines[optionThree]]
+    : ["1. Yes", "2. Yes, and don't ask again", "3. No"];
+  const descriptionEnd = menuComplete ? optionOne : lines.length;
+  const description = lines
+    .slice(Math.max(0, descriptionEnd - 6), descriptionEnd)
+    .filter((line) => !/^Claude Code 请求权限[:：]?$/i.test(line))
+    .filter((line) => !/^\d[.)]\s+/.test(line))
+    .filter((line) => !looksLikePromptFragment(sentText, line));
+  const body = [
+    "Claude Code 请求权限：",
+    ...description,
+    ...options,
+  ].join("\n");
+  return `${body.replace(/\s+$/g, "")}\n`;
+}
+
+function looksLikePromptFragment(sentText: string, line: string): boolean {
+  const prompt = normalizeForDetection(sentText).replace(/\s+/g, " ").toLowerCase();
+  const candidate = normalizeClientLine(line).toLowerCase();
+  return Boolean(prompt && candidate && prompt.includes(candidate));
+}
+
+function tailMeaningfulLines(value: string, maxLines: number): string {
+  return value
+    .split("\n")
+    .map((line) => line.replace(/\s+$/g, ""))
+    .filter(Boolean)
+    .slice(-maxLines)
+    .join("\n");
+}
+
+function terminalStatusSummary(status: BridgeCommandResult["status"]): string {
+  if (status === "timeout") return "Claude Code bridge round timed out.";
+  if (status === "interrupted") return "Claude Code bridge round was interrupted.";
+  if (status === "not_submitted") return "Claude Code input produced no effective output.";
+  if (status === "exited") return "Claude Code process exited.";
+  if (status === "busy") return "Claude Code bridge is busy with another round.";
+  return "";
 }
 
 function cleanClientLine(value: string): string {

@@ -7,28 +7,26 @@ const NO_ACTIVE_BRIDGE = "No active codex_lead_cc bridge found in this process e
     "This command must be run inside a Codex session launched by codex_lead_cc.";
 export async function ccSendMain(rawArgs) {
     const options = await parseSendArgs(rawArgs);
-    const result = await runFileBridgeRequest({
+    const result = await runBridgeRoundTrip({
         type: "send",
         request_id: makeRequestId(),
         prompt: options.prompt,
         timeout_sec: options.timeoutSec,
         created_at: new Date().toISOString(),
-    });
-    writeStatusFooter(result);
+    }, { stream: options.stream });
     if (!["completed", "needs_permission"].includes(result.status)) {
         process.exitCode = 1;
     }
 }
 export async function ccInputMain(rawArgs) {
     const options = parseInputArgs(rawArgs);
-    const result = await runFileBridgeRequest({
+    const result = await runBridgeRoundTrip({
         type: "input",
         request_id: makeRequestId(),
         key: options.key,
         timeout_sec: options.timeoutSec,
         created_at: new Date().toISOString(),
-    });
-    writeStatusFooter(result);
+    }, { stream: options.stream });
     if (!["completed", "needs_permission"].includes(result.status)) {
         process.exitCode = 1;
     }
@@ -38,21 +36,27 @@ export async function ccStatusMain(_rawArgs) {
     const status = readBridgeStatus(env);
     stdout.write(`${JSON.stringify(status, null, 2)}\n`);
 }
-async function runFileBridgeRequest(request) {
+async function runBridgeRoundTrip(request, options = { stream: false }) {
     const env = loadBridgeEnv();
     ensureBridgeDirs(env);
     writeRequest(env, request);
-    return streamUntilResult(env, request);
+    const result = await waitForResultFile(env, request, options);
+    if (!options.stream)
+        printFinalOutput(result);
+    writeStatusFooter(result);
+    return result;
 }
-async function streamUntilResult(env, request) {
+async function waitForResultFile(env, request, options) {
     const streamFile = path.join(env.streamsDir, `${request.request_id}.log`);
     const resultFile = path.join(env.resultsDir, `${request.request_id}.json`);
     const deadline = Date.now() + request.timeout_sec * 1_000 + 15_000;
     let offset = 0;
     while (Date.now() < deadline) {
-        offset = flushStream(streamFile, offset);
-        if (existsSync(resultFile)) {
+        if (options.stream)
             offset = flushStream(streamFile, offset);
+        if (existsSync(resultFile)) {
+            if (options.stream)
+                flushStream(streamFile, offset);
             return parseResult(resultFile);
         }
         await sleep(100);
@@ -61,6 +65,26 @@ async function streamUntilResult(env, request) {
         status: "timeout",
         error: `Timed out waiting for bridge result for request ${request.request_id}.`,
     };
+}
+function printFinalOutput(result) {
+    let output = result.output ?? "";
+    if (!output && result.output_file && existsSync(result.output_file)) {
+        output = readFileSync(result.output_file, "utf8");
+    }
+    if (!output && result.status === "needs_permission") {
+        output = [
+            "Claude Code 请求权限：",
+            "1. Yes",
+            "2. Yes, and don't ask again",
+            "3. No",
+        ].join("\n");
+    }
+    const trimmedOutput = output.replace(/\s+$/g, "");
+    if (trimmedOutput)
+        stdout.write(`${trimmedOutput}\n`);
+    if (result.error && !trimmedOutput.includes(result.error)) {
+        stdout.write(`${result.error}\n`);
+    }
 }
 function flushStream(streamFile, offset) {
     if (!existsSync(streamFile))
@@ -137,6 +161,7 @@ function ensureBridgeDirs(env) {
 }
 async function parseSendArgs(rawArgs) {
     let timeoutSec = 120;
+    let stream = false;
     const promptArgs = [];
     for (let i = 0; i < rawArgs.length; i++) {
         const arg = rawArgs[i];
@@ -146,6 +171,9 @@ async function parseSendArgs(rawArgs) {
                 throw new Error("--timeout-sec requires a value.");
             timeoutSec = positiveInteger(next, "--timeout-sec");
             i++;
+        }
+        else if (arg === "--stream") {
+            stream = true;
         }
         else if (arg === "--help" || arg === "-h") {
             stdout.write(ccSendHelp());
@@ -159,10 +187,11 @@ async function parseSendArgs(rawArgs) {
     if (!prompt.trim()) {
         throw new Error("cc-send requires a prompt from argv or stdin.");
     }
-    return { prompt, timeoutSec };
+    return { prompt, timeoutSec, stream };
 }
 function parseInputArgs(rawArgs) {
     let timeoutSec = 120;
+    let stream = false;
     let key;
     for (let i = 0; i < rawArgs.length; i++) {
         const arg = rawArgs[i];
@@ -182,6 +211,9 @@ function parseInputArgs(rawArgs) {
             timeoutSec = positiveInteger(next, "--timeout-sec");
             i++;
         }
+        else if (arg === "--stream") {
+            stream = true;
+        }
         else if (arg === "--help" || arg === "-h") {
             stdout.write(ccInputHelp());
             process.exit(0);
@@ -192,7 +224,7 @@ function parseInputArgs(rawArgs) {
     }
     if (!key)
         throw new Error("cc-input requires --key.");
-    return { key, timeoutSec };
+    return { key, timeoutSec, stream };
 }
 function readStdin() {
     return new Promise((resolve, reject) => {
@@ -225,13 +257,13 @@ function sleep(ms) {
 function ccSendHelp() {
     return `codex_lead_cc cc-send - Send a prompt to the current Claude Code bridge
 Usage:
-  codex_lead_cc cc-send [--timeout-sec 120] "prompt"
-  codex_lead_cc cc-send [--timeout-sec 120] < prompt.txt
+  codex_lead_cc cc-send [--timeout-sec 120] [--stream] "prompt"
+  codex_lead_cc cc-send [--timeout-sec 120] [--stream] < prompt.txt
 `;
 }
 function ccInputHelp() {
     return `codex_lead_cc cc-input - Send a key to the current Claude Code bridge
-Usage: codex_lead_cc cc-input --key <1|2|3|enter|escape|ctrl-c> [--timeout-sec 120]
+Usage: codex_lead_cc cc-input --key <1|2|3|enter|escape|ctrl-c> [--timeout-sec 120] [--stream]
 `;
 }
 //# sourceMappingURL=cc_client.js.map

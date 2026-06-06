@@ -45,9 +45,10 @@ session_dir/
     bridge.log
 ```
 
-`cc-send` and `cc-input` create request files in `bridge/inbox`, stream output
-from `bridge/streams/<request_id>.log`, and finish when
-`bridge/results/<request_id>.json` appears.
+`cc-send` and `cc-input` create request files in `bridge/inbox`, wait for
+`bridge/results/<request_id>.json`, and then print the final clean output.
+Intermediate PTY output is hidden by default; `--stream` tails the clean debug
+stream when explicitly requested.
 
 `cc-status` only reads `bridge/state.json`.
 

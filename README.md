@@ -38,8 +38,8 @@ codex_lead_cc --doctor
 
 ```bash
 codex_lead_cc [codex args...]
-codex_lead_cc cc-send [--timeout-sec 120] "prompt"
-codex_lead_cc cc-input --key <1|2|3|enter|escape|ctrl-c>
+codex_lead_cc cc-send [--timeout-sec 120] [--stream] "prompt"
+codex_lead_cc cc-input --key <1|2|3|enter|escape|ctrl-c> [--stream]
 codex_lead_cc cc-status
 codex_lead_cc migrate-supervisor
 codex_lead_cc update
@@ -63,9 +63,9 @@ session_dir/
     bridge.log
 ```
 
-`cc-send` writes `bridge/inbox/<request_id>.json`, tails `bridge/streams/<request_id>.log`, waits for `bridge/results/<request_id>.json`, then prints the status footer.
+`cc-send` writes `bridge/inbox/<request_id>.json`, waits for `bridge/results/<request_id>.json`, then prints the final clean output and status footer. It does not print intermediate PTY output by default; `--stream` enables the clean debug stream.
 
-`cc-input` does the same, but sends one key to the PTY.
+`cc-input` uses the same blocking output path, but sends one key to the PTY.
 
 `cc-status` only reads `bridge/state.json`; it does not drive Claude Code execution.
 

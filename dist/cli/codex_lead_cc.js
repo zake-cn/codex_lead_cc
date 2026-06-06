@@ -340,8 +340,8 @@ function printHelp() {
 
 Usage:
   codex_lead_cc [--doctor] [codex args...]
-  codex_lead_cc cc-send [--timeout-sec 120] "prompt"
-  codex_lead_cc cc-input --key <1|2|3|enter|escape|ctrl-c>
+  codex_lead_cc cc-send [--timeout-sec 120] [--stream] "prompt"
+  codex_lead_cc cc-input --key <1|2|3|enter|escape|ctrl-c> [--stream]
   codex_lead_cc cc-status
   codex_lead_cc migrate-supervisor
   codex_lead_cc update [--from <git-url>] [--dry-run]
