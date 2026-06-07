@@ -1,4 +1,4 @@
-export declare const SUPERVISOR_RULES_VERSION = 2;
+export declare const SUPERVISOR_RULES_VERSION = 3;
 export declare const SUPERVISOR_VERSION_FILE = ".codex_lead_cc_supervisor_version.json";
 export interface SupervisorMigrationSummary {
     supervisor_home: string;

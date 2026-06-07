@@ -69,6 +69,16 @@ session_dir/
 
 `cc-status` only reads `bridge/state.json`; it does not drive Claude Code execution.
 
+## Tool-Like Command Behavior
+
+`cc-send` and `cc-input` behave like native Codex shell or Python command executions. They are bridge commands, not conversation turns for Codex to narrate.
+
+- Terminal output belongs in the command output block.
+- Codex waits for the final status footer before continuing its reasoning.
+- Codex does not narrate, explain, infer, or summarize intermediate Claude Code progress.
+- `--stream` is only for explicit bridge-output debugging.
+- `cc-status` is a diagnostic command, not a progress polling loop.
+
 ## Status Footer
 
 ```text
@@ -76,6 +86,8 @@ session_dir/
 {"status":"completed"}
 <<<CODEX_LEAD_CC_STATUS_END>>>
 ```
+
+Codex must parse this footer before deciding the next action. Every completed bridge command round prints a footer, including permission, timeout, interruption, exit, busy, and not-submitted outcomes.
 
 Permission request:
 
@@ -129,6 +141,8 @@ When Claude Code asks for permission, Codex asks the human which option to grant
 Only send `--key 2` when the human explicitly asks Claude Code itself to stop asking.
 
 Human grants reusable policy to Codex. Codex grants one-shot approval to Claude Code.
+
+When an existing reusable Codex policy matches, the supervisor sends the one-shot approval without repeating the full safety explanation.
 
 ## Supervisor Migration
 
