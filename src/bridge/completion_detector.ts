@@ -7,6 +7,9 @@ export const DONE_MARKER = "<<<CODEX_LEAD_CC_DONE>>>";
 export interface CompletionDetectorOptions {
   minRunMs: number;
   quietMs: number;
+  screenStableMs: number;
+  fastQuietMs: number;
+  postSpinnerQuietMs: number;
   spinnerStableMs: number;
   checkIntervalMs: number;
   submitGraceMs: number;
@@ -22,6 +25,9 @@ export interface CompletionCheckInput {
   effectiveOutputSeen: boolean;
   inputBoxStillContainsPrompt: boolean;
   snapshot: TerminalScreenSnapshot;
+  screenStableSince: number;
+  lastMeaningfulOutputAt: number;
+  lastSpinnerSeenAt: number;
 }
 
 export interface ScreenDetection {
@@ -33,6 +39,9 @@ export interface ScreenDetection {
 export const DEFAULT_COMPLETION_OPTIONS: CompletionDetectorOptions = {
   minRunMs: 1_500,
   quietMs: 2_500,
+  screenStableMs: 1_500,
+  fastQuietMs: 2_000,
+  postSpinnerQuietMs: 2_000,
   spinnerStableMs: 1_000,
   checkIntervalMs: 100,
   submitGraceMs: 5_000,
@@ -74,18 +83,49 @@ export class CompletionDetector {
     }
 
     if (input.now >= input.deadlineAt) {
-      return { status: "timeout" };
+      // Deadline reached — explain why screen-stability conditions were not met.
+      const reasons: string[] = [];
+      if (!input.effectiveOutputSeen) reasons.push("no effective output seen");
+      if (screen.spinnerDetected) reasons.push("spinner/loading still visible");
+      if (screen.permissionPromptDetected) reasons.push("permission prompt visible");
+      if (input.now - input.screenStableSince < this.options.screenStableMs) {
+        reasons.push(
+          `screen not stable long enough (${input.now - input.screenStableSince}ms < ${this.options.screenStableMs}ms)`,
+        );
+      }
+      if (
+        input.lastMeaningfulOutputAt > 0 &&
+        input.now - input.lastMeaningfulOutputAt < this.options.fastQuietMs
+      ) {
+        reasons.push(
+          `insufficient quiet after last meaningful output (${input.now - input.lastMeaningfulOutputAt}ms < ${this.options.fastQuietMs}ms)`,
+        );
+      }
+      if (
+        input.lastSpinnerSeenAt > 0 &&
+        input.now - input.lastSpinnerSeenAt < this.options.postSpinnerQuietMs
+      ) {
+        reasons.push(
+          `insufficient quiet after last spinner (${input.now - input.lastSpinnerSeenAt}ms < ${this.options.postSpinnerQuietMs}ms)`,
+        );
+      }
+      return {
+        status: "detection_failed",
+        error: reasons.length > 0
+          ? reasons.join("; ")
+          : "deadline reached, screen-stability conditions not met",
+      };
     }
 
     if (!input.submittedAt) {
       return undefined;
     }
 
-    const quietEnough = input.now - input.lastOutputAt >= this.options.quietMs;
-    const ranLongEnough = input.now - input.startedAt >= this.options.minRunMs;
+    // Not-submitted detection: no effective output after submit grace period.
+    // Only uses input-box prompt detection — no raw quietMs fallback.
     if (!input.effectiveOutputSeen) {
       const graceExpired = input.now - input.submittedAt >= this.options.submitGraceMs;
-      if (graceExpired && (quietEnough || input.inputBoxStillContainsPrompt)) {
+      if (graceExpired && input.inputBoxStillContainsPrompt) {
         return {
           status: "not_submitted",
           error: "Prompt appears to remain in Claude Code input box; no effective output was observed.",
@@ -94,10 +134,30 @@ export class CompletionDetector {
       return undefined;
     }
 
-    if (quietEnough && ranLongEnough && !screen.spinnerDetected && input.effectiveOutputSeen) {
-      return { status: "completed" };
-    }
-    return undefined;
+    // Screen-stability-based completion.
+    // All conditions must be met — no fallback to raw quietMs.
+    const ranLongEnough = input.now - input.startedAt >= this.options.minRunMs;
+    if (!ranLongEnough) return undefined;
+
+    if (screen.spinnerDetected) return undefined;
+
+    const screenStable =
+      input.now - input.screenStableSince >= this.options.screenStableMs;
+    if (!screenStable) return undefined;
+
+    const quietAfterMeaningful =
+      input.lastMeaningfulOutputAt > 0
+        ? input.now - input.lastMeaningfulOutputAt >= this.options.fastQuietMs
+        : true;
+    if (!quietAfterMeaningful) return undefined;
+
+    const quietAfterSpinner =
+      input.lastSpinnerSeenAt > 0
+        ? input.now - input.lastSpinnerSeenAt >= this.options.postSpinnerQuietMs
+        : true;
+    if (!quietAfterSpinner) return undefined;
+
+    return { status: "completed" };
   }
 }
 

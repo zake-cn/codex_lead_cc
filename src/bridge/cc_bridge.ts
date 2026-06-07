@@ -73,6 +73,9 @@ interface ActiveInteraction {
   // we stop prompt-based filtering for the remainder of the stream.
   echoBoundaryReached: boolean;
   consumedEchoChars: string;
+  // Screen-stability tracking for completion detection.
+  screenStableSince: number;
+  lastSpinnerSeenAt: number;
   submitTimer?: ReturnType<typeof setTimeout>;
   timer: ReturnType<typeof setInterval>;
 }
@@ -92,6 +95,11 @@ export class CcBridge {
   // not_submitted to poll the screen and transition back to idle once
   // Claude Code has recovered.
   private recoveryTimer: ReturnType<typeof setInterval> | undefined;
+  // Screen-stability tracking: updated in onPtyOutput when screen content
+  // changes, and in refreshScreenDetection when a spinner is visible.
+  private screenStableSince = Date.now();
+  private lastSnapshotText = "";
+  private lastSpinnerSeenAt = 0;
   // TEST-ONLY gate: when true onPtyExit is a no-op so rmSync in tests
   // can proceed without a late exit event writing into a deleted dir.
   private disposingForTest = false;
@@ -251,6 +259,9 @@ export class CcBridge {
 
     this.state = "running";
     this.lastOutputAt = now;
+    this.screenStableSince = now;
+    this.lastSnapshotText = this.screen.snapshot().text;
+    this.lastSpinnerSeenAt = 0;
     this.detector.reset();
     // Bug 4: cancel any stale-state recovery — a new active round is starting.
     this.cancelRecoveryTimer();
@@ -275,6 +286,8 @@ export class CcBridge {
       cleanEmittedLineKeys: new Set<string>(),
       echoBoundaryReached: false,
       consumedEchoChars: "",
+      screenStableSince: now,
+      lastSpinnerSeenAt: 0,
       timer: setInterval(() => this.checkCompletion(), DEFAULT_COMPLETION_OPTIONS.checkIntervalMs),
     };
     active.timer.unref();
@@ -301,6 +314,13 @@ export class CcBridge {
     this.lastOutput = tail(`${this.lastOutput}${chunk}`, 4_000);
     appendFileSync(this.rawOutputLog, chunk, "utf8");
     this.screen.feed(chunk);
+
+    // Track screen stability for completion detection.
+    const newText = this.screen.snapshot().text;
+    if (newText !== this.lastSnapshotText) {
+      this.screenStableSince = Date.now();
+      this.lastSnapshotText = newText;
+    }
 
     if (this.active) {
       if (chunk.includes(DONE_MARKER)) {
@@ -365,10 +385,16 @@ export class CcBridge {
       effectiveOutputSeen: this.active.effectiveOutputSeen,
       inputBoxStillContainsPrompt,
       snapshot,
+      screenStableSince: this.screenStableSince,
+      lastMeaningfulOutputAt: this.active.lastMeaningfulOutputAt ?? 0,
+      lastSpinnerSeenAt: this.lastSpinnerSeenAt,
     });
     this.refreshScreenDetection();
     this.writeState();
     if (result) {
+      if (result.status === "detection_failed") {
+        this.active.decisionReason = `detection_failed: ${result.error ?? "unknown"}`;
+      }
       if (result.status === "timeout") {
         this.active.decisionReason = !this.active.effectiveOutputSeen
           ? "timeout_no_effective_output"
@@ -399,6 +425,7 @@ export class CcBridge {
     if (result.status === "completed") this.state = "idle";
     else if (result.status === "needs_permission") this.state = "needs_permission";
     else if (result.status === "timeout") this.state = "timeout";
+    else if (result.status === "detection_failed") this.state = "detection_failed";
     else if (result.status === "interrupted") this.state = "interrupted";
     else if (result.status === "not_submitted") this.state = "not_submitted";
     else if (result.status === "exited") this.state = "exited";
@@ -422,6 +449,7 @@ export class CcBridge {
     // interrupt, the persistent state can eventually return to idle.
     if (
       result.status === "timeout" ||
+      result.status === "detection_failed" ||
       result.status === "interrupted" ||
       result.status === "not_submitted"
     ) {
@@ -469,7 +497,7 @@ export class CcBridge {
 
     const screenOutput = cleanFinalText(snapshot.text, active.sentPromptText);
     let output = streamOutput || screenOutput;
-    if (["timeout", "interrupted", "not_submitted", "exited"].includes(result.status)) {
+    if (["timeout", "detection_failed", "interrupted", "not_submitted", "exited"].includes(result.status)) {
       output = tailMeaningfulLines(output, 30);
       const summary = result.error || terminalStatusSummary(result.status);
       if (summary && !output.includes(summary)) {
@@ -586,6 +614,10 @@ export class CcBridge {
       spinner_detected: this.spinnerDetected,
       permission_prompt_detected: this.permissionPromptDetected,
       quiet_ms: DEFAULT_COMPLETION_OPTIONS.quietMs,
+      screen_stable_ms: DEFAULT_COMPLETION_OPTIONS.screenStableMs,
+      fast_quiet_ms: DEFAULT_COMPLETION_OPTIONS.fastQuietMs,
+      post_spinner_quiet_ms: DEFAULT_COMPLETION_OPTIONS.postSpinnerQuietMs,
+      screen_stable_for_ms: Date.now() - this.screenStableSince,
       bottom_lines: snapshot.bottom_lines,
       raw_tail_contains_esc_to_interrupt: /esc to interrupt/i.test(stripAnsi(snapshot.raw_tail)),
       raw_tail_ignored_for_spinner: true,
@@ -610,6 +642,12 @@ export class CcBridge {
       spinner_detected: this.spinnerDetected,
       permission_prompt_detected: this.permissionPromptDetected,
       quiet_ms: DEFAULT_COMPLETION_OPTIONS.quietMs,
+      screen_stable_ms: DEFAULT_COMPLETION_OPTIONS.screenStableMs,
+      fast_quiet_ms: DEFAULT_COMPLETION_OPTIONS.fastQuietMs,
+      post_spinner_quiet_ms: DEFAULT_COMPLETION_OPTIONS.postSpinnerQuietMs,
+      screen_stable_for_ms: now - this.screenStableSince,
+      last_spinner_seen_at: this.lastSpinnerSeenAt || undefined,
+      time_since_last_spinner_ms: this.lastSpinnerSeenAt > 0 ? now - this.lastSpinnerSeenAt : undefined,
       submit_grace_ms: DEFAULT_COMPLETION_OPTIONS.submitGraceMs,
       bottom_lines: snapshot.bottom_lines,
       raw_tail_contains_esc_to_interrupt: /esc to interrupt/i.test(stripAnsi(snapshot.raw_tail)),
@@ -630,10 +668,16 @@ export class CcBridge {
   }
 
   private refreshScreenDetection(): void {
-    const detection = this.detector.inspect(this.screen.snapshot());
+    const snapshot = this.screen.snapshot();
+    const detection = this.detector.inspect(snapshot);
     this.spinnerDetected = detection.spinnerDetected;
     this.permissionPromptDetected = detection.permissionPromptDetected;
     this.suggestedKeys = detection.suggestedKeys;
+    // Track last spinner visibility (stateless, not sticky) for
+    // post-spinner quiet-period enforcement in completion detection.
+    if (detectSpinner(snapshot)) {
+      this.lastSpinnerSeenAt = Date.now();
+    }
   }
 
   private statusPayload(): BridgeStatusPayload {
@@ -704,6 +748,7 @@ export class CcBridge {
     }
     if (
       this.state !== "timeout" &&
+      this.state !== "detection_failed" &&
       this.state !== "interrupted" &&
       this.state !== "not_submitted"
     ) {
@@ -1205,6 +1250,7 @@ function tailMeaningfulLines(value: string, maxLines: number): string {
 
 function terminalStatusSummary(status: BridgeCommandResult["status"]): string {
   if (status === "timeout") return "Claude Code bridge round timed out.";
+  if (status === "detection_failed") return "Completion detection failed — deadline reached before screen stability conditions were met.";
   if (status === "interrupted") return "Claude Code bridge round was interrupted.";
   if (status === "not_submitted") return "Claude Code input produced no effective output.";
   if (status === "exited") return "Claude Code process exited.";

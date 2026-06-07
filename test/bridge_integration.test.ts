@@ -173,21 +173,21 @@ async function main(): Promise<void> {
       await sleep(200);
       await waitState(session.bridge_state_file, "running");
 
-      // B2: wait for timeout (~1s deadline + completion check)
+      // B2: wait for deadline (~1s) — screen-stability conditions not met → detection_failed
       const tr = await waitResult(path.join(session.bridge_dir, "results"), rt, 4000);
-      assert("B2. timeout result = timeout", tr.status, "timeout");
+      assert("B2. deadline result = detection_failed", tr.status, "detection_failed");
 
-      // B2-bis: re-read result file — must still say timeout
+      // B2-bis: re-read result file — must still say detection_failed
       assert("B2-bis. result file NOT overwritten",
         (JSON.parse(readFileSync(path.join(session.bridge_dir, "results", `${rt}.json`), "utf8")) as BridgeCommandResult).status,
-        "timeout");
+        "detection_failed");
 
-      // B3: state = timeout
-      assert("B3. persistent state = timeout", readState(session.bridge_state_file).status, "timeout");
+      // B3: state = detection_failed
+      assert("B3. persistent state = detection_failed", readState(session.bridge_state_file).status, "detection_failed");
 
-      // B4: tickRecovery before quiet — stays timeout
+      // B4: tickRecovery before quiet — stays detection_failed
       bridge.tickRecovery(Date.now());
-      assert("B4. stays timeout before quiet", readState(session.bridge_state_file).status, "timeout");
+      assert("B4. stays detection_failed before quiet", readState(session.bridge_state_file).status, "detection_failed");
 
       // B5: emit clean prompt + tick with future time → idle
       pty.emitData("user@host:~/project$ ");
