@@ -26,7 +26,7 @@ import type {
   SessionFile,
 } from "../types.js";
 import { BRIDGE_INPUT_KEYS } from "../types.js";
-import { CompletionDetector, DEFAULT_COMPLETION_OPTIONS, DONE_MARKER } from "./completion_detector.js";
+import { CompletionDetector, DEFAULT_COMPLETION_OPTIONS, DONE_MARKER, detectPermissionPrompt, detectSpinner } from "./completion_detector.js";
 import { startClaudePty, type ClaudePty } from "./pty.js";
 import { SimpleAnsiTerminalScreen, stripAnsi, type TerminalScreenSnapshot } from "./terminal_screen.js";
 
@@ -69,11 +69,15 @@ interface ActiveInteraction {
   inputEchoOnly: boolean;
   decisionReason: string;
   cleanEmittedLineKeys: Set<string>;
+  // Strict leading-echo boundary: once the first non-echo line appears
+  // we stop prompt-based filtering for the remainder of the stream.
+  echoBoundaryReached: boolean;
+  consumedEchoChars: string;
   submitTimer?: ReturnType<typeof setTimeout>;
   timer: ReturnType<typeof setInterval>;
 }
 
-class CcBridge {
+export class CcBridge {
   private state: BridgeStatus = "idle";
   private readonly screen = new SimpleAnsiTerminalScreen();
   private readonly detector = new CompletionDetector();
@@ -84,6 +88,13 @@ class CcBridge {
   private suggestedKeys: string[] = [];
   private active: ActiveInteraction | undefined;
   private inboxTimer: ReturnType<typeof setInterval> | undefined;
+  // Bug 4: stale-state recovery timer.  Runs after timeout/interrupted/
+  // not_submitted to poll the screen and transition back to idle once
+  // Claude Code has recovered.
+  private recoveryTimer: ReturnType<typeof setInterval> | undefined;
+  // TEST-ONLY gate: when true onPtyExit is a no-op so rmSync in tests
+  // can proceed without a late exit event writing into a deleted dir.
+  private disposingForTest = false;
 
   private readonly inboxDir: string;
   private readonly streamsDir: string;
@@ -188,7 +199,19 @@ class CcBridge {
       this.writeImmediateResult(request.request_id, { status: "exited" }, request);
       return;
     }
+    // Allow interrupt keys (ctrl-c, escape) to bypass busy protection so the
+    // user can stop a running Claude Code session.  Normal input keys are
+    // still blocked — only one round at a time.
     if (this.active || this.state === "running") {
+      if (request.key === "ctrl-c" || request.key === "escape") {
+        // Send the interrupt to PTY and finish the active round.
+        // The original cc-send waiter gets an "interrupted" result so it
+        // doesn't have to wait for timeout.
+        this.pty.write(inputKeyToBytes(request.key));
+        this.writeImmediateResult(request.request_id, { status: "completed" }, request);
+        this.finishActive({ status: "interrupted" });
+        return;
+      }
       this.writeImmediateResult(request.request_id, { status: "busy" }, request);
       return;
     }
@@ -229,6 +252,8 @@ class CcBridge {
     this.state = "running";
     this.lastOutputAt = now;
     this.detector.reset();
+    // Bug 4: cancel any stale-state recovery — a new active round is starting.
+    this.cancelRecoveryTimer();
     const active: ActiveInteraction = {
       request,
       requestId: request.request_id,
@@ -248,6 +273,8 @@ class CcBridge {
       inputEchoOnly: false,
       decisionReason: "started",
       cleanEmittedLineKeys: new Set<string>(),
+      echoBoundaryReached: false,
+      consumedEchoChars: "",
       timer: setInterval(() => this.checkCompletion(), DEFAULT_COMPLETION_OPTIONS.checkIntervalMs),
     };
     active.timer.unref();
@@ -301,13 +328,19 @@ class CcBridge {
         });
       } else if (this.state !== "exited") {
         this.state = "needs_permission";
+        // Bug 4: a new permission prompt replaces stale-state recovery.
+        this.cancelRecoveryTimer();
       }
     }
     this.writeState();
   }
 
   private onPtyExit(): void {
+    // TEST-ONLY: when disposing, the temp dir may already be gone.
+    // Don't touch state or write any files.
+    if (this.disposingForTest) return;
     this.state = "exited";
+    this.cancelRecoveryTimer();
     if (this.active) {
       this.finishActive({ status: "exited" });
     } else {
@@ -370,6 +403,10 @@ class CcBridge {
     else if (result.status === "not_submitted") this.state = "not_submitted";
     else if (result.status === "exited") this.state = "exited";
 
+    // Bug 4: the result file MUST preserve the original status (timeout /
+    // interrupted / not_submitted) for the caller.  Below we start a
+    // background recovery timer that may later refresh the persistent
+    // state to idle — but it never rewrites this result file.
     const finalOutput = this.buildFinalOutput(active, result);
     writeFileSync(active.finalOutputFile, finalOutput, "utf8");
     const finalResult: BridgeCommandResult = {
@@ -380,6 +417,16 @@ class CcBridge {
     writeJsonAtomic(active.resultFile, finalResult);
     this.writeDebugFinish(active, finalResult);
     this.writeState();
+
+    // Start background recovery: if Claude Code finishes after a timeout /
+    // interrupt, the persistent state can eventually return to idle.
+    if (
+      result.status === "timeout" ||
+      result.status === "interrupted" ||
+      result.status === "not_submitted"
+    ) {
+      this.startRecoveryTimer();
+    }
   }
 
   private writeImmediateResult(
@@ -638,7 +685,93 @@ class CcBridge {
     };
   }
 
+  // ── Bug 4: stale-state recovery ──
+
+  private startRecoveryTimer(): void {
+    if (this.recoveryTimer) return; // already running
+    this.recoveryTimer = setInterval(() => {
+      this.tickRecovery();
+    }, DEFAULT_COMPLETION_OPTIONS.checkIntervalMs);
+    this.recoveryTimer.unref();
+  }
+
+  // now parameter allows fake-timer injection in tests.
+  tickRecovery(now?: number): void {
+    // Guard: a new round or state transition already took over.
+    if (this.active) {
+      this.cancelRecoveryTimer();
+      return;
+    }
+    if (
+      this.state !== "timeout" &&
+      this.state !== "interrupted" &&
+      this.state !== "not_submitted"
+    ) {
+      this.cancelRecoveryTimer();
+      return;
+    }
+
+    // Use stateless helpers (no sticky spinner history) so the decision
+    // depends ONLY on the currently visible bottom area.
+    const snapshot = this.screen.snapshot();
+    const spinnerNow = detectSpinner(snapshot);
+    const permissionNow = detectPermissionPrompt(snapshot);
+
+    if (permissionNow.detected) {
+      // Permission menu appeared after the round finished — surface it.
+      this.state = "needs_permission";
+      this.permissionPromptDetected = true;
+      this.suggestedKeys = permissionNow.suggestedKeys;
+      this.cancelRecoveryTimer();
+      this.writeState();
+      return;
+    }
+
+    const nowEffective = now ?? Date.now();
+    const quietFor = nowEffective - this.lastOutputAt;
+    if (!spinnerNow && quietFor >= DEFAULT_COMPLETION_OPTIONS.quietMs) {
+      // Screen is clean and quiet — Claude Code is back at the prompt.
+      this.state = "idle";
+      this.spinnerDetected = false;
+      this.cancelRecoveryTimer();
+      this.writeState();
+    }
+  }
+
+  private cancelRecoveryTimer(): void {
+    if (this.recoveryTimer) {
+      clearInterval(this.recoveryTimer);
+      this.recoveryTimer = undefined;
+    }
+  }
+
+  // ── Test-only: safe disposal without state writes ──
+
+  /**
+   * TEST-ONLY.  Cancel all timers, drop the active interaction silently,
+   * and stop the PTY so the test harness can safely remove the temp
+   * session directory.  Does NOT call finishActive / writeState /
+   * writeJsonAtomic — no result files are created or overwritten.
+   *
+   * Callers MUST `await` a short event-loop tick after this returns
+   * before rmSync'ing the session directory, so any in-flight PTY exit
+   * event (which is a no-op thanks to the disposingForTest gate) has
+   * time to settle.
+   */
+  disposeForTest(): void {
+    this.disposingForTest = true;
+    this.cancelRecoveryTimer();
+    if (this.inboxTimer) { clearInterval(this.inboxTimer); this.inboxTimer = undefined; }
+    if (this.active) {
+      clearInterval(this.active.timer);
+      if (this.active.submitTimer) clearTimeout(this.active.submitTimer);
+      this.active = undefined;
+    }
+    try { this.pty.kill("SIGTERM"); } catch { /* ignore */ }
+  }
+
   private shutdown(): void {
+    this.cancelRecoveryTimer();
     if (this.active) {
       this.finishActive({ status: "interrupted" });
     }
@@ -745,7 +878,7 @@ function writeJsonAtomic(filePath: string, value: unknown): void {
   renameSync(tempPath, filePath);
 }
 
-function inputKeyToBytes(key: BridgeInputKey): string {
+export function inputKeyToBytes(key: BridgeInputKey): string {
   if (key === "1") return "1\r";
   if (key === "2") return "2\r";
   if (key === "3") return "3\r";
@@ -791,19 +924,34 @@ function promptNeedle(prompt: string): string {
   return compact.slice(Math.max(0, compact.length - 80));
 }
 
-function isInputEcho(sentText: string, plainOutput: string): boolean {
+export function isInputEcho(sentText: string, plainOutput: string): boolean {
   const needle = promptNeedle(sentText);
   if (!needle) return false;
   const haystack = plainOutput.replace(/\s+/g, " ");
+  // Strip common prompt indicators so "> prompt text" still matches
+  const stripped = haystack
+    .replace(/^(?:bash|sh|zsh)-?\d*(?:\.\d+)*[$#>]\s*/i, "")
+    .replace(/^>\s*/, "")
+    .trim();
   if (needle.length < 8) {
-    const withoutPrompt = haystack
-      .replace(/^(?:bash|sh|zsh)-?\d*(?:\.\d+)*[$#>]\s*/i, "")
-      .replace(/^>\s*/, "")
-      .trim();
-    return withoutPrompt === needle;
+    return stripped === needle;
   }
+  // Full-needle match on stripped or raw haystack
+  if (stripped === needle || stripped.includes(needle)) return true;
   if (haystack.includes(needle)) return true;
   if (needle.length > 24 && haystack.includes(needle.slice(-24))) return true;
+  if (needle.length > 24 && stripped.includes(needle.slice(-24))) return true;
+  // Multi-line prompt: check each prompt line individually so wrapped
+  // or split echo fragments are caught
+  const promptLineNeedles = normalizeForDetection(sentText)
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length >= 4);
+  for (const lineNeedle of promptLineNeedles) {
+    if (stripped === lineNeedle) return true;
+    if (lineNeedle.length >= 12 && stripped.includes(lineNeedle)) return true;
+    if (lineNeedle.length > 24 && stripped.includes(lineNeedle.slice(-24))) return true;
+  }
   return false;
 }
 
@@ -841,8 +989,15 @@ function cleanChunkForClient(active: ActiveInteraction, chunk: string): string {
   for (const rawLine of stripped.split("\n")) {
     const line = cleanClientLine(rawLine);
     if (!line) continue;
-    if (isInputEcho(active.sentPromptText, line)) continue;
     if (isTuiNoiseLine(line)) continue;
+    // Strict leading-echo boundary: only filter by prompt in the echo
+    // region at the start.  Once the first non-echo line appears we
+    // stop prompt-based filtering for the rest of the stream.
+    if (!active.echoBoundaryReached) {
+      if (isLineInEchoRegion(line, active)) continue;
+      // First non-echo line — end echo region permanently.
+      active.echoBoundaryReached = true;
+    }
     const key = normalizeClientLine(line);
     if (!key || (key.length >= 4 && active.cleanEmittedLineKeys.has(key))) continue;
     if (key.length >= 4) active.cleanEmittedLineKeys.add(key);
@@ -860,50 +1015,146 @@ function cleanStatusText(value: string): string {
   return lines.slice(-20).join("\n");
 }
 
-function cleanFinalText(value: string, sentText: string): string {
-  const promptLines = new Set(
-    normalizeForDetection(sentText)
-      .split("\n")
-      .map(normalizeClientLine)
-      .filter(Boolean),
-  );
-  const candidateLines: string[] = [];
-  for (const rawLine of stripAnsi(value).replace(/\r/g, "\n").split("\n")) {
-    let line = cleanClientLine(rawLine);
-    if (!line || line.includes(DONE_MARKER) || isTuiNoiseLine(line)) continue;
-    const normalized = normalizeClientLine(line);
-    if (promptLines.has(normalized) || isInputEcho(sentText, normalized)) continue;
-
-    const normalizedPrompt = normalizeForDetection(sentText).replace(/\s+/g, " ");
-    if (normalizedPrompt && normalized.includes(normalizedPrompt)) {
-      line = line.replace(normalizedPrompt, "").trim();
+export function cleanFinalText(value: string, sentText: string): string {
+  const rawLines = stripAnsi(value).replace(/\r/g, "\n").split("\n");
+  const cleaned: string[] = [];
+  for (const rawLine of rawLines) {
+    const line = cleanClientLine(rawLine);
+    if (line && !line.includes(DONE_MARKER) && !isTuiNoiseLine(line)) {
+      cleaned.push(line);
     }
-    if (line) candidateLines.push(line);
+  }
+  if (cleaned.length === 0) return "";
+
+  const normalizedPrompt = normalizeForDetection(sentText);
+  const promptCompact = normalizedPrompt.replace(/\s+/g, "");
+
+  // Strict leading-echo boundary: scan from the start and remove only
+  // lines that are explainable as prompt input-box echo (with optional
+  // ❯/> prefixes, ANSI codes, line wrapping, empty prompt-box lines).
+  // Once the first line with novel content appears — Claude's actual
+  // thinking or answer body — we stop ALL prompt-based filtering.
+  // Everything after the echo boundary is preserved verbatim (dedup
+  // only), even if later lines happen to match prompt text exactly.
+  let echoEnd = 0;
+  let consumed = "";
+
+  for (let i = 0; i < cleaned.length; i++) {
+    const stripped = strippedLineForEcho(cleaned[i]);
+    const compact = stripped.replace(/\s+/g, "");
+
+    if (!compact) { echoEnd = i + 1; continue; }
+
+    if (isEchoFragment(compact, promptCompact, consumed)) {
+      echoEnd = i + 1;
+      // Advance consumed to track how much of the prompt is accounted for
+      const remaining = promptCompact.slice(consumed.length);
+      if (remaining.startsWith(compact)) {
+        consumed += compact;
+      } else if (compact.length > 0 && remaining.length > 0) {
+        // Partial overlap — consume the matching prefix
+        for (let o = Math.min(remaining.length, compact.length); o > 0; o--) {
+          if (remaining.startsWith(compact.slice(0, o))) {
+            consumed += compact.slice(0, o);
+            break;
+          }
+        }
+      }
+      if (consumed.length >= promptCompact.length) {
+        echoEnd = i + 1;
+        break;
+      }
+      continue;
+    }
+
+    // Novel content — echo region ends
+    break;
   }
 
+  // After the echo boundary: only dedup, never filter by prompt.
+  const result: string[] = [];
   const seen = new Set<string>();
-  const lines: string[] = [];
-  for (const line of stripLeadingPromptEchoFragments(candidateLines, sentText)) {
-    const key = normalizeClientLine(line);
-    if (!key || seen.has(key)) continue;
-    seen.add(key);
-    lines.push(line);
+  for (let i = echoEnd; i < cleaned.length; i++) {
+    const key = normalizeClientLine(cleaned[i]);
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      result.push(cleaned[i]);
+    }
   }
-  return lines.join("\n").trim();
+  return result.join("\n").trim();
 }
 
-function stripLeadingPromptEchoFragments(lines: string[], sentText: string): string[] {
-  const prompt = normalizeForDetection(sentText).replace(/\s+/g, "");
-  if (!prompt || lines.length === 0) return lines;
+// ── Echo-region helpers ──
 
-  let joined = "";
-  for (let index = 0; index < Math.min(lines.length, 100); index++) {
-    const fragment = normalizeClientLine(lines[index]).replace(/^>\s*/, "").replace(/\s+/g, "");
-    if (!fragment || !prompt.startsWith(`${joined}${fragment}`)) return lines;
-    joined += fragment;
-    if (joined === prompt) return lines.slice(index + 1);
+/** Strip prompt-indicator prefix and normalize for echo detection. */
+function strippedLineForEcho(line: string): string {
+  return normalizeClientLine(line).replace(/^[❯▶▸●○>]\s*/, "");
+}
+
+/**
+ * Check whether `compact` is explainable as part of the input-echo
+ * region for the given prompt.  `consumed` tracks how much of the
+ * prompt has already been accounted for by previous echo lines.
+ */
+function isEchoFragment(compact: string, promptCompact: string, consumed: string): boolean {
+  if (!compact || !promptCompact) return false;
+
+  const remaining = promptCompact.slice(consumed.length);
+  if (!remaining) return false;
+
+  // The fragment is a prefix of the remaining prompt
+  if (remaining.startsWith(compact)) return true;
+
+  // The remaining prompt is a prefix of the fragment (extra chars from
+  // ANSI codes, terminal artefacts).  Only when remaining is long enough
+  // that this is unlikely to be a coincidental word match.
+  if (remaining.length >= 8 && compact.startsWith(remaining)) return true;
+
+  // The fragment is fully contained somewhere in the prompt (wrapped
+  // echo, partial match)
+  if (promptCompact.includes(compact)) return true;
+
+  // Short fragment that matches part of remaining
+  if (compact.length <= 40 && remaining.length >= compact.length &&
+      remaining.includes(compact)) return true;
+
+  // Compact line contains a long-enough prefix of remaining prompt
+  // somewhere inside it (wrapped echo continuation).
+  if (compact.length >= 8 && remaining.length >= 8 &&
+      compact.includes(remaining.slice(0, Math.min(40, remaining.length)))) return true;
+
+  return false;
+}
+
+/**
+ * Per-line check used by cleanChunkForClient for incremental echo
+ * detection across stream chunks.  Delegates to isEchoFragment after
+ * stripping and normalizing the line.
+ */
+function isLineInEchoRegion(line: string, active: ActiveInteraction): boolean {
+  const stripped = strippedLineForEcho(line);
+  const compact = stripped.replace(/\s+/g, "");
+  if (!compact) return true; // empty/prefix-only line → still in echo region
+
+  const normalizedPrompt = normalizeForDetection(active.sentPromptText);
+  const promptCompact = normalizedPrompt.replace(/\s+/g, "");
+
+  const result = isEchoFragment(compact, promptCompact, active.consumedEchoChars);
+  if (result) {
+    // Advance consumed tracker across chunks
+    const remaining = promptCompact.slice(active.consumedEchoChars.length);
+    if (remaining.startsWith(compact)) {
+      active.consumedEchoChars += compact;
+    } else if (compact.length > 0 && remaining.length > 0) {
+      for (let o = Math.min(remaining.length, compact.length); o > 0; o--) {
+        if (remaining.startsWith(compact.slice(0, o))) {
+          active.consumedEchoChars += compact.slice(0, o);
+          break;
+        }
+      }
+    }
   }
-  return lines;
+  return result;
 }
 
 function buildPermissionOutput(

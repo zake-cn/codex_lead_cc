@@ -241,6 +241,90 @@ console.log("\n=== Permission Detection Regression Tests ===\n");
     `bottom_lines: ${JSON.stringify(snap.bottom_lines.slice(-6))}`);
 }
 
+// 14. Bug 1 regression: compact "2.Yes" format (no space after dot)
+{
+  console.log("14. Compact '2.Yes' format — no space after dot");
+  const menu = [
+    "Do you want to proceed?",
+    "❯ 1. Yes",
+    "2.Yes, and don't ask again for /home/user",
+    "3. No",
+  ];
+  const snap = makeSnapshot(menu);
+  const result = detectPermissionPrompt(snap);
+  assert("compact 2.Yes menu detected", result.detected, true,
+    "\\s* after [.)] allows zero-space compact format");
+  assert("compact 2.Yes keys", result.suggestedKeys, ["1", "2", "3"]);
+}
+
+// 15. Bug 1 regression: fully compact menu (all dot-prefixed, no spaces)
+{
+  console.log("15. Fully compact menu (all dot-prefixed, no spaces)");
+  const menu = [
+    "1.Yes",
+    "2.Yes, and don't ask again",
+    "3.No",
+  ];
+  const snap = makeSnapshot(menu);
+  const result = detectPermissionPrompt(snap);
+  assert("fully compact menu detected", result.detected, true,
+    "1.Yes / 2.Yes / 3.No should be detected as permission");
+}
+
+// 16. Bug 1 false-positive guard: compact numbers but NOT permission
+{
+  console.log("16. Compact numbers in code output — NOT permission");
+  const code = [
+    "1.function init() {",
+    "2.return setup();",
+    "3.finalize();",
+  ];
+  const snap = makeSnapshot(code);
+  const result = detectPermissionPrompt(snap);
+  assert("compact code output NOT menu", result.detected, false,
+    "No Yes/No/dont-ask despite compact numbering");
+}
+
+// 17. Bug 4: detectSpinner on clean prompt (no spinner visible)
+{
+  console.log("17. detectSpinner on clean prompt — should be false");
+  const prompt = [
+    "user@host:~/project$ ",
+    "",
+  ];
+  const snap = makeSnapshot(prompt);
+  const spinner = detectSpinner(snap);
+  assert("clean prompt NOT spinner", spinner, false,
+    "Prompt line should not be detected as spinner");
+}
+
+// 18. Bug 4: detectSpinner with \"thinking\" in bottom area
+{
+  console.log("18. detectSpinner with 'thinking' indicator");
+  const thinking = [
+    "user@host:~/project$ ",
+    "  ⎿  thinking...",
+    "",
+  ];
+  const snap = makeSnapshot(thinking);
+  const spinner = detectSpinner(snap);
+  assert("thinking detected as spinner", spinner, true,
+    "thinking/loading/processing/working should be detected");
+}
+
+// 19. Bug 4: detectSpinner with Braille spinner chars
+{
+  console.log("19. detectSpinner with Braille spinner chars");
+  const spinnerLines = [
+    "⠋ Working on it...",
+    "",
+  ];
+  const snap = makeSnapshot(spinnerLines);
+  const spinner = detectSpinner(snap);
+  assert("braille spinner detected", spinner, true,
+    "Braille pattern chars should be detected");
+}
+
 // ── Summary ──
 
 console.log(`\n=== Results: ${passed} passed, ${failed} failed ===\n`);

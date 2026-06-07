@@ -108,9 +108,12 @@ export function detectPermissionPrompt(snapshot: TerminalScreenSnapshot): {
   const text = visibleText(snapshot);
   // Allow common terminal cursor/selector characters before option numbers
   // (e.g. ❯ ▶ ▸ ●) so Claude Code permission menus are detected.
-  const hasOne = /^[\s❯▶▸●○]*1[.)]\s+/m.test(text);
-  const hasTwo = /^[\s❯▶▸●○]*2[.)]\s+/m.test(text);
-  const hasThree = /^[\s❯▶▸●○]*3[.)]\s+/m.test(text);
+  // \s* allows compact formats like "2.Yes" (no space after dot) in
+  // addition to "2. Yes".  False positives are guarded by the
+  // hasYes/hasNo/hasDontAskAgain/hasCommandRequest checks below.
+  const hasOne = /^[\s❯▶▸●○]*1[.)]\s*/m.test(text);
+  const hasTwo = /^[\s❯▶▸●○]*2[.)]\s*/m.test(text);
+  const hasThree = /^[\s❯▶▸●○]*3[.)]\s*/m.test(text);
   const hasChoices = hasOne && hasTwo && hasThree;
   const hasYes = /\bYes\b/i.test(text);
   const hasNo = /\bNo\b/i.test(text);
